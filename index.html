@@ -558,7 +558,8 @@ let showDeleted = false;
 
 const safeStorage = {
   get(key){ try{ return localStorage.getItem(key); }catch(e){ return null; } },
-  set(key, val){ try{ localStorage.setItem(key, val); }catch(e){ /* storage unavailable; identity just won't persist */ } }
+  set(key, val){ try{ localStorage.setItem(key, val); }catch(e){ /* storage unavailable; identity just won't persist */ } },
+  remove(key){ try{ localStorage.removeItem(key); }catch(e){} }
 };
 let meId = safeStorage.get(STORAGE_KEY) || null;
 
@@ -1222,7 +1223,7 @@ async function boot(){
   const { getAuth, signInAnonymously, onAuthStateChanged } = authMod;
   const { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
           collection: _collection, doc: _doc, addDoc: _addDoc, updateDoc: _updateDoc,
-          setDoc: _setDoc, deleteDoc: _deleteDoc, onSnapshot: _onSnapshot, writeBatch } = fsMod;
+          setDoc: _setDoc, deleteDoc: _deleteDoc, onSnapshot: _onSnapshot, writeBatch, runTransaction } = fsMod;
 
   window.collection = _collection; window.doc = _doc; window.addDoc = _addDoc;
   window.updateDoc = _updateDoc; window.setDoc = _setDoc; window.deleteDoc = _deleteDoc;
@@ -1267,17 +1268,41 @@ async function boot(){
     if (subscribed) return;
     subscribed = true;
 
+    async function seedMembersOnce(){
+      // Guards against two phones opening an empty trip at the same moment and
+      // both seeding the starting names — only the transaction that wins the
+      // race on the "seeded" flag actually writes the batch.
+      let wonRace = false;
+      try{
+        wonRace = await runTransaction(db, async (tx)=>{
+          const flagRef = tripSettingsRef();
+          const flagSnap = await tx.get(flagRef);
+          if (flagSnap.exists() && flagSnap.data().seeded) return false;
+          tx.set(flagRef, {seeded:true}, {merge:true});
+          return true;
+        });
+      }catch(e){ return; } // couldn't claim the lock — safer to skip than risk a duplicate
+      if (!wonRace) return;
+      const batch = writeBatch(db);
+      SEED_MEMBERS.forEach(name=>{
+        const ref = _doc(membersCol());
+        batch.set(ref, {name, active:true, createdAt: Date.now()});
+      });
+      await batch.commit().catch(()=>{});
+    }
+
     _onSnapshot(membersCol(), async (snap)=>{
       members = snap.docs.map(d=>({id:d.id, ...d.data()}));
       if (members.length === 0 && !TRIP_ID){
         // seed the default/legacy trip only — a freshly-created trip starts empty on purpose
-        const batch = writeBatch(db);
-        SEED_MEMBERS.forEach(name=>{
-          const ref = _doc(membersCol());
-          batch.set(ref, {name, active:true, createdAt: Date.now()});
-        });
-        await batch.commit().catch(()=>{});
-        return; // next snapshot will carry the seeded members
+        await seedMembersOnce();
+        return; // the seed's own writes re-trigger this snapshot
+      }
+      if (meId && !members.some(m=>m.id===meId && m.active)){
+        // saved identity points at someone inactive/removed (e.g. a deduped
+        // duplicate) — don't silently misattribute expenses, ask again
+        meId = null;
+        safeStorage.remove(STORAGE_KEY);
       }
       renderAll();
       if (!meId && members.length) openWhoModal();
@@ -1302,7 +1327,7 @@ async function boot(){
         showTripNotFound();
         return;
       } else {
-        await _setDoc(tripSettingsRef(), {name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY}).catch(()=>{});
+        await _setDoc(tripSettingsRef(), {name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY}, {merge:true}).catch(()=>{});
         tripSettings = {name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY};
       }
       renderAll();
