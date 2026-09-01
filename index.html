@@ -83,6 +83,17 @@
   }
   #setupBanner code{background:rgba(0,0,0,0.08);padding:1px 5px;border-radius:4px;}
 
+  #offlineBanner{
+    display:none;
+    background:var(--neutral-bg);
+    color:var(--ink-muted);
+    padding:10px 16px;
+    font-size:12px;
+    font-weight:600;
+    text-align:center;
+    border-bottom:1px solid var(--border);
+  }
+
   /* ---- topbar ---- */
   .topbar{
     position:sticky; top:0; z-index:20;
@@ -220,6 +231,19 @@
   .ledger-meta{font-size:12px; color:var(--ink-muted); margin-top:3px; line-height:1.5;}
   .ledger-del{background:none; border:none; color:var(--ink-muted); cursor:pointer; font-size:16px; padding:4px; flex-shrink:0; align-self:flex-start;}
   .ledger-del:hover{color:var(--negative);}
+  .ledger-actions{display:flex; gap:2px; flex-shrink:0; align-self:flex-start;}
+  .ledger-edit{background:none; border:none; color:var(--ink-muted); cursor:pointer; font-size:15px; padding:4px;}
+  .ledger-edit:hover{color:var(--accent);}
+  .ledger-item-deleted{opacity:0.55;}
+  .ledger-item-deleted .ledger-desc{text-decoration:line-through;}
+  .ledger-restore:hover{color:var(--positive);}
+  .deleted-meta{color:var(--negative); margin-top:2px;}
+  .edited-meta{color:var(--ink-muted); margin-top:2px; font-style:italic;}
+  .deleted-toggle{
+    display:block; width:100%; text-align:center; background:none; border:none;
+    color:var(--ink-muted); font-size:12px; font-weight:600; padding:12px; cursor:pointer;
+  }
+  .deleted-toggle:hover{color:var(--ink);}
   .tag-settlement{display:inline-block; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; background:var(--neutral-bg); color:var(--ink-muted); padding:2px 6px; border-radius:5px; margin-right:6px;}
 
   /* people tab */
@@ -286,8 +310,17 @@
 <body>
 
 <div id="setupBanner"></div>
+<div id="offlineBanner"></div>
 
-<div class="topbar">
+<div id="tripNotFoundScreen" style="display:none;">
+  <div class="card" style="max-width:420px; margin:22vh auto 0; padding:28px 22px; text-align:center;">
+    <h2 style="font-size:19px; margin-bottom:8px;">Trip not found</h2>
+    <p style="font-size:14px; color:var(--ink-muted); line-height:1.6; margin:0 0 18px;">This trip link doesn't match anything — it may be mistyped or the trip was never created.</p>
+    <a href="." class="btn-primary" style="display:block; text-decoration:none; box-sizing:border-box;">Go to the main trip</a>
+  </div>
+</div>
+
+<div class="topbar" id="topbar">
   <div>
     <div class="trip-name" id="tripNameDisplay">Trip Split</div>
     <div class="trip-sub" id="tripSubDisplay">loading…</div>
@@ -323,7 +356,7 @@
 
   <!-- ADD -->
   <section class="view" id="view-add">
-    <h2 style="font-size:20px;margin-bottom:16px;">Add an expense</h2>
+    <h2 style="font-size:20px;margin-bottom:16px;" id="addHeading">Add an expense</h2>
     <form id="addForm">
       <div class="field">
         <label for="f-desc">What was it?</label>
@@ -349,6 +382,7 @@
         </div>
       </div>
       <button class="btn-primary" type="submit">Add expense</button>
+      <button type="button" class="btn-secondary" id="editCancelBtn" style="width:100%; margin-top:8px; display:none;">Cancel edit</button>
     </form>
   </section>
 
@@ -356,6 +390,8 @@
   <section class="view" id="view-ledger">
     <h2 style="font-size:20px;margin-bottom:16px;">Ledger</h2>
     <div class="card" id="ledgerCard"></div>
+    <button type="button" id="ledgerDeletedToggle" class="deleted-toggle" style="display:none;"></button>
+    <div class="card" id="ledgerDeletedList" style="display:none; margin-top:8px;"></div>
   </section>
 
   <!-- PEOPLE -->
@@ -390,6 +426,27 @@
         <button id="p-addbtn" type="button">Add</button>
       </div>
     </div>
+
+    <div class="section-label">Share this trip</div>
+    <div class="card" style="padding:14px;">
+      <div style="font-size:12px; color:var(--ink-muted); margin-bottom:8px;">Anyone with this link can join — send it to your group.</div>
+      <div style="display:flex; gap:8px;">
+        <input class="input" id="p-triplink" type="text" readonly style="font-family:var(--font-mono); font-size:12px;" />
+        <button type="button" class="btn-secondary" id="p-copylink">Copy</button>
+      </div>
+    </div>
+
+    <div class="section-label">Export</div>
+    <div class="card" style="padding:14px; display:flex; flex-direction:column; gap:10px;">
+      <button type="button" class="btn-secondary" id="p-exporttext">Copy summary as text</button>
+      <button type="button" class="btn-secondary" id="p-exportcsv">Download expenses as CSV</button>
+    </div>
+
+    <div class="section-label">Trips</div>
+    <div class="card" style="padding:14px;">
+      <div style="font-size:12px; color:var(--ink-muted); margin-bottom:10px;">Going on another trip later? Start a fresh one — same app, a new link, separate people and expenses.</div>
+      <button type="button" class="btn-secondary" id="p-newtrip" style="width:100%;">Start a new trip →</button>
+    </div>
   </section>
 
 </main>
@@ -421,6 +478,35 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="newTripBackdrop">
+  <div class="modal-sheet">
+    <h2>Start a new trip</h2>
+    <div class="sub">Creates a separate trip with its own people, expenses, and shareable link.</div>
+    <div class="field">
+      <label for="nt-name">Trip name</label>
+      <input class="input" id="nt-name" type="text" maxlength="40" placeholder="e.g. Hunza Trip 2027" />
+    </div>
+    <div class="field">
+      <label for="nt-currency">Currency</label>
+      <select class="input" id="nt-currency">
+        <option value="PKR">PKR — Pakistani Rupee</option>
+        <option value="USD">USD — US Dollar</option>
+        <option value="EUR">EUR — Euro</option>
+        <option value="GBP">GBP — British Pound</option>
+        <option value="AED">AED — UAE Dirham</option>
+        <option value="SAR">SAR — Saudi Riyal</option>
+        <option value="INR">INR — Indian Rupee</option>
+      </select>
+    </div>
+    <div class="field" style="margin-bottom:0;">
+      <label for="nt-people">People (optional, one name per line)</label>
+      <textarea class="input" id="nt-people" rows="4" style="resize:vertical; font-family:inherit;" placeholder="Khizar&#10;Raheel&#10;Saad"></textarea>
+    </div>
+    <button type="button" class="btn-primary" id="nt-create">Create trip</button>
+    <button type="button" class="btn-secondary" id="nt-cancel" style="width:100%; margin-top:8px;">Cancel</button>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script type="module">
@@ -443,6 +529,16 @@ const SEED_MEMBERS = ["Khizar", "Raheel", "Saad", "Adil", "Danish", "Abdul Hadi"
 const DEFAULT_CURRENCY = "PKR";
 const DEFAULT_TRIP_NAME = "Trip Split";
 
+/* ---------- multi-trip routing ----------
+   No ?trip= param: the original/default trip, at the same flat Firestore
+   paths this app always used (so the trip you already started keeps working
+   exactly as-is). A ?trip=<id> param addresses a separate trip created later
+   via "Start a new trip", stored under trips/<id>/... . */
+const TRIP_ID = new URLSearchParams(location.search).get("trip") || null;
+const MEMBERS_PATH = TRIP_ID ? `trips/${TRIP_ID}/members` : "members";
+const EXPENSES_PATH = TRIP_ID ? `trips/${TRIP_ID}/expenses` : "expenses";
+const STORAGE_KEY = TRIP_ID ? ("tripSplitMeId_" + TRIP_ID) : "tripSplitMeId";
+
 /* ---------- setup guard ---------- */
 const needsSetup = !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey === "YOUR_API_KEY";
 if (needsSetup) {
@@ -456,12 +552,21 @@ let uid = null;
 let members = [];      // {id, name, active}
 let expenses = [];      // {id, type, description, amount, payerId, participantIds, createdAt, addedBy}
 let tripSettings = { name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY };
+let tripNotFound = false;
+let editingExpenseId = null;
+let showDeleted = false;
 
 const safeStorage = {
   get(key){ try{ return localStorage.getItem(key); }catch(e){ return null; } },
   set(key, val){ try{ localStorage.setItem(key, val); }catch(e){ /* storage unavailable; identity just won't persist */ } }
 };
-let meId = safeStorage.get("tripSplitMeId") || null;
+let meId = safeStorage.get(STORAGE_KEY) || null;
+
+function membersCol(){ return collection(db, MEMBERS_PATH); }
+function expensesCol(){ return collection(db, EXPENSES_PATH); }
+function memberDoc(id){ return doc(db, MEMBERS_PATH, id); }
+function expenseDoc(id){ return doc(db, EXPENSES_PATH, id); }
+function tripSettingsRef(){ return TRIP_ID ? doc(db, "trips", TRIP_ID) : doc(db, "settings", "trip"); }
 
 const AVATAR_COLORS = ["#146F66","#B5453A","#8E6F14","#3A5FB5","#7A4CB5","#B5148A","#4C8E14","#14868E"];
 function colorFor(id){
@@ -485,6 +590,31 @@ function toast(msg){
   t.classList.add("show");
   clearTimeout(toast._t);
   toast._t = setTimeout(()=>t.classList.remove("show"), 2200);
+}
+
+function initConnectionIndicator(){
+  const banner = document.getElementById("offlineBanner");
+  function update(){
+    if (navigator.onLine){
+      banner.style.display = "none";
+    } else {
+      banner.style.display = "block";
+      banner.textContent = "You're offline — new expenses will save on this phone and sync automatically once you're back online.";
+    }
+  }
+  window.addEventListener("online", ()=>{ update(); toast("Back online — syncing"); });
+  window.addEventListener("offline", update);
+  update();
+}
+function saveToast(actionLabel){
+  toast(navigator.onLine ? actionLabel : actionLabel + " offline — will sync later");
+}
+
+function showTripNotFound(){
+  document.getElementById("tripNotFoundScreen").style.display = "block";
+  document.getElementById("topbar").style.display = "none";
+  document.querySelector("main").style.display = "none";
+  document.querySelector(".tabbar").style.display = "none";
 }
 function nameOf(id){ const m = members.find(m=>m.id===id); return m ? m.name : "Someone"; }
 
@@ -528,7 +658,7 @@ function escapeHtml(s){
 function computeBalances(){
   const net = {};
   members.forEach(m=>net[m.id]=0);
-  expenses.forEach(e=>{
+  expenses.filter(e=>!e.deleted).forEach(e=>{
     if (!(e.payerId in net)) net[e.payerId] = 0;
     net[e.payerId] += e.amount;
     const ids = e.participantIds || [];
@@ -607,9 +737,10 @@ function renderHome(){
     heroSub.textContent = Math.abs(mine) < 0.01 ? "Nice, no money owed either way." : (mine > 0.01 ? "Overall, across the whole trip." : "Overall, across the whole trip.");
   }
 
-  const total = expenses.filter(e=>e.type!=="settlement").reduce((s,e)=>s+e.amount,0);
+  const liveExpenses = expenses.filter(e=>!e.deleted && e.type!=="settlement");
+  const total = liveExpenses.reduce((s,e)=>s+e.amount,0);
   document.getElementById("statTotal").textContent = fmtMoney(total);
-  document.getElementById("statCount").textContent = expenses.filter(e=>e.type!=="settlement").length;
+  document.getElementById("statCount").textContent = liveExpenses.length;
   document.getElementById("statPeople").textContent = members.filter(m=>m.active).length;
 
   const settlements = computeSettlements(net);
@@ -638,7 +769,7 @@ function renderHome(){
         const from = btn.dataset.from, to = btn.dataset.to, amt = parseFloat(btn.dataset.amt);
         btn.disabled = true; btn.textContent = "Saving…";
         try{
-          await addDoc(collection(db,"expenses"), {
+          await addDoc(expensesCol(), {
             type: "settlement",
             description: "Settlement",
             amount: amt,
@@ -647,7 +778,7 @@ function renderHome(){
             createdAt: Date.now(),
             addedBy: meId || from
           });
-          toast(nameOf(from) + " → " + nameOf(to) + " recorded");
+          saveToast(nameOf(from) + " → " + nameOf(to) + " recorded");
         }catch(e){
           toast("Couldn't save — check your connection");
           btn.disabled = false; btn.textContent = "Mark paid";
@@ -671,32 +802,73 @@ function renderHome(){
 }
 
 function renderAddForm(){
+  const editingExpense = editingExpenseId ? expenses.find(e=>e.id===editingExpenseId && !e.deleted) : null;
+  if (editingExpenseId && !editingExpense){
+    // the expense being edited vanished (deleted elsewhere) — bail out of edit mode
+    editingExpenseId = null;
+  }
+
   const payerSel = document.getElementById("f-payer");
   const activeMembers = members.filter(m=>m.active);
   const prevPayer = payerSel.value;
-  payerSel.innerHTML = activeMembers.map(m=>`<option value="${m.id}">${escapeHtml(m.name)}</option>`).join("");
-  if (activeMembers.some(m=>m.id===meId)) payerSel.value = meId;
-  else if (activeMembers.some(m=>m.id===prevPayer)) payerSel.value = prevPayer;
+  const isNewEditSession = payerSel.dataset.editingFor !== (editingExpenseId || "");
+  payerSel.innerHTML = activeMembers.map(m=>`<option value="${m.id}">${escapeHtml(m.name)}${m.id===meId?' (you)':''}</option>`).join("");
+
+  if (editingExpense && isNewEditSession){
+    payerSel.value = editingExpense.payerId;
+  } else if (!editingExpenseId){
+    if (activeMembers.some(m=>m.id===meId)) payerSel.value = meId;
+    else if (activeMembers.some(m=>m.id===prevPayer)) payerSel.value = prevPayer;
+  } else if (activeMembers.some(m=>m.id===prevPayer)){
+    payerSel.value = prevPayer; // preserve an in-progress edit across incidental re-renders
+  }
+  payerSel.dataset.editingFor = editingExpenseId || "";
 
   const splitWrap = document.getElementById("f-split");
   const existingChecked = new Set(
     Array.from(splitWrap.querySelectorAll(".check-chip.checked")).map(el=>el.dataset.id)
   );
-  const isFirstRender = splitWrap.dataset.rendered !== "1";
+  const isFirstSplitRender = splitWrap.dataset.rendered !== "1" || splitWrap.dataset.editingFor !== (editingExpenseId || "");
   splitWrap.innerHTML = activeMembers.map(m=>{
-    const checked = isFirstRender ? true : existingChecked.has(m.id);
+    let checked;
+    if (isFirstSplitRender && editingExpense) checked = (editingExpense.participantIds||[]).includes(m.id);
+    else if (isFirstSplitRender) checked = true;
+    else checked = existingChecked.has(m.id);
     return `<div class="check-chip ${checked?'checked':''}" data-id="${m.id}">
       <span class="avatar" style="background:${colorFor(m.id)}">${initials(m.name)}</span>
       <span>${escapeHtml(m.name)}</span>
     </div>`;
   }).join("");
   splitWrap.dataset.rendered = "1";
+  splitWrap.dataset.editingFor = editingExpenseId || "";
   splitWrap.querySelectorAll(".check-chip").forEach(chip=>{
     chip.addEventListener("click", ()=>chip.classList.toggle("checked"));
   });
 
   document.getElementById("amountPrefix").textContent = currencySymbolGuess(tripSettings.currency);
+
+  document.getElementById("addHeading").textContent = editingExpense ? "Edit expense" : "Add an expense";
+  document.querySelector('#addForm button[type=submit]').textContent = editingExpense ? "Save changes" : "Add expense";
+  document.getElementById("editCancelBtn").style.display = editingExpense ? "block" : "none";
 }
+
+function enterEditMode(id){
+  const exp = expenses.find(e=>e.id===id && !e.deleted);
+  if (!exp) return;
+  editingExpenseId = id;
+  document.getElementById("f-desc").value = exp.description;
+  document.getElementById("f-amount").value = exp.amount;
+  document.querySelector('.tab-btn[data-view="add"]').click();
+  renderAddForm();
+}
+function cancelEdit(){
+  editingExpenseId = null;
+  document.getElementById("f-desc").value = "";
+  document.getElementById("f-amount").value = "";
+  renderAddForm();
+  document.querySelector('.tab-btn[data-view="ledger"]').click();
+}
+document.getElementById("editCancelBtn").addEventListener("click", cancelEdit);
 function currencySymbolGuess(code){
   try{
     const parts = new Intl.NumberFormat(undefined,{style:"currency",currency:code}).formatToParts(0);
@@ -721,65 +893,129 @@ document.getElementById("addForm").addEventListener("submit", async (e)=>{
   if (!desc || !amount || amount<=0 || !payerId){ toast("Fill in all fields"); return; }
   if (!participantIds.length){ toast("Pick at least one person to split with"); return; }
   const submitBtn = e.target.querySelector("button[type=submit]");
-  submitBtn.disabled = true; submitBtn.textContent = "Adding…";
+  const wasEditing = editingExpenseId;
+  submitBtn.disabled = true; submitBtn.textContent = wasEditing ? "Saving…" : "Adding…";
   try{
-    await addDoc(collection(db,"expenses"), {
-      type: "expense",
-      description: desc,
-      amount,
-      payerId,
-      participantIds,
-      createdAt: Date.now(),
-      addedBy: meId || payerId
-    });
-    document.getElementById("f-desc").value = "";
-    document.getElementById("f-amount").value = "";
-    toast("Expense added");
-    document.querySelector('.tab-btn[data-view="home"]').click();
+    if (wasEditing){
+      await updateDoc(expenseDoc(wasEditing), {
+        description: desc, amount, payerId, participantIds,
+        editedAt: Date.now(), editedBy: meId || payerId
+      });
+      editingExpenseId = null;
+      document.getElementById("f-desc").value = "";
+      document.getElementById("f-amount").value = "";
+      saveToast("Expense updated");
+      document.querySelector('.tab-btn[data-view="ledger"]').click();
+    } else {
+      await addDoc(expensesCol(), {
+        type: "expense",
+        description: desc,
+        amount,
+        payerId,
+        participantIds,
+        createdAt: Date.now(),
+        addedBy: meId || payerId
+      });
+      document.getElementById("f-desc").value = "";
+      document.getElementById("f-amount").value = "";
+      saveToast("Expense added");
+      document.querySelector('.tab-btn[data-view="home"]').click();
+    }
   }catch(err){
     toast("Couldn't save — check your connection");
   }finally{
-    submitBtn.disabled = false; submitBtn.textContent = "Add expense";
+    submitBtn.disabled = false; submitBtn.textContent = editingExpenseId ? "Save changes" : "Add expense";
   }
 });
 
+function ledgerItemHtml(e, isDeleted){
+  const isSettlement = e.type === "settlement";
+  const participantNames = (e.participantIds||[]).map(nameOf).join(", ");
+  const date = e.createdAt ? new Date(e.createdAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "";
+  const deletedMeta = isDeleted
+    ? `<div class="ledger-meta deleted-meta">Deleted by ${escapeHtml(nameOf(e.deletedBy))}${e.deletedAt ? " · " + new Date(e.deletedAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</div>`
+    : "";
+  const editedMeta = (!isDeleted && e.editedAt)
+    ? `<div class="ledger-meta edited-meta">Edited by ${escapeHtml(nameOf(e.editedBy))} · ${new Date(e.editedAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}</div>`
+    : "";
+  const actions = isDeleted
+    ? `<button class="ledger-del ledger-restore" data-id="${e.id}" title="Restore">↺</button>`
+    : `<div class="ledger-actions">
+        ${!isSettlement ? `<button class="ledger-edit" data-id="${e.id}" title="Edit">✎</button>` : ""}
+        <button class="ledger-del" data-id="${e.id}" title="Delete">✕</button>
+      </div>`;
+  return `<div class="ledger-item ${isDeleted?'ledger-item-deleted':''}">
+    <span class="avatar" style="background:${colorFor(e.payerId)}">${initials(nameOf(e.payerId))}</span>
+    <div class="ledger-main">
+      <div class="ledger-top">
+        <div class="ledger-desc">${isSettlement?'<span class="tag-settlement">Settled</span>':''}${escapeHtml(e.description)}</div>
+        <div class="ledger-amt">${fmtMoney(e.amount)}</div>
+      </div>
+      <div class="ledger-meta">${isSettlement
+        ? `${escapeHtml(nameOf(e.payerId))} paid ${escapeHtml(participantNames)} · ${date}`
+        : `${escapeHtml(nameOf(e.payerId))} paid · split with ${escapeHtml(participantNames)} · ${date}`}</div>
+      ${editedMeta}
+      ${deletedMeta}
+    </div>
+    ${actions}
+  </div>`;
+}
+
 function renderLedger(){
   const card = document.getElementById("ledgerCard");
-  const sorted = [...expenses].sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
-  if (!sorted.length){
-    card.innerHTML = `<div class="empty-note">No expenses yet. Add the first one!</div>`;
-    return;
-  }
-  card.innerHTML = sorted.map(e=>{
-    const isSettlement = e.type === "settlement";
-    const participantNames = (e.participantIds||[]).map(nameOf).join(", ");
-    const date = e.createdAt ? new Date(e.createdAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "";
-    return `<div class="ledger-item">
-      <span class="avatar" style="background:${colorFor(e.payerId)}">${initials(nameOf(e.payerId))}</span>
-      <div class="ledger-main">
-        <div class="ledger-top">
-          <div class="ledger-desc">${isSettlement?'<span class="tag-settlement">Settled</span>':''}${escapeHtml(e.description)}</div>
-          <div class="ledger-amt">${fmtMoney(e.amount)}</div>
-        </div>
-        <div class="ledger-meta">${isSettlement
-          ? `${escapeHtml(nameOf(e.payerId))} paid ${escapeHtml(participantNames)} · ${date}`
-          : `${escapeHtml(nameOf(e.payerId))} paid · split with ${escapeHtml(participantNames)} · ${date}`}</div>
-      </div>
-      <button class="ledger-del" data-id="${e.id}" title="Delete">✕</button>
-    </div>`;
-  }).join("");
+  const toggle = document.getElementById("ledgerDeletedToggle");
+  const deletedWrap = document.getElementById("ledgerDeletedList");
+
+  const active = expenses.filter(e=>!e.deleted).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  const deleted = expenses.filter(e=>e.deleted).sort((a,b)=>(b.deletedAt||0)-(a.deletedAt||0));
+
+  card.innerHTML = active.length
+    ? active.map(e=>ledgerItemHtml(e,false)).join("")
+    : `<div class="empty-note">${deleted.length ? "No active expenses — see deleted below." : "No expenses yet. Add the first one!"}</div>`;
+
+  card.querySelectorAll(".ledger-edit").forEach(btn=>{
+    btn.addEventListener("click", ()=> enterEditMode(btn.dataset.id));
+  });
   card.querySelectorAll(".ledger-del").forEach(btn=>{
     btn.addEventListener("click", async ()=>{
-      if (!confirm("Delete this entry?")) return;
-      try{ await deleteDoc(doc(db,"expenses",btn.dataset.id)); toast("Deleted"); }
-      catch(e){ toast("Couldn't delete — check your connection"); }
+      if (!confirm("Delete this entry? It stays visible in the deleted log below, not erased.")) return;
+      try{
+        await updateDoc(expenseDoc(btn.dataset.id), {deleted:true, deletedBy: meId||null, deletedAt: Date.now()});
+        saveToast("Deleted");
+      }catch(e){ toast("Couldn't delete — check your connection"); }
+    });
+  });
+
+  if (!deleted.length){
+    toggle.style.display = "none";
+    deletedWrap.style.display = "none";
+    deletedWrap.innerHTML = "";
+    return;
+  }
+  toggle.style.display = "block";
+  toggle.textContent = showDeleted ? `Hide deleted (${deleted.length})` : `Show deleted (${deleted.length})`;
+  deletedWrap.style.display = showDeleted ? "block" : "none";
+  deletedWrap.innerHTML = deleted.map(e=>ledgerItemHtml(e,true)).join("");
+  deletedWrap.querySelectorAll(".ledger-restore").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      try{
+        await updateDoc(expenseDoc(btn.dataset.id), {deleted:false, deletedBy:null, deletedAt:null});
+        saveToast("Restored");
+      }catch(e){ toast("Couldn't restore — check your connection"); }
     });
   });
 }
+document.addEventListener("click", (e)=>{
+  if (e.target && e.target.id === "ledgerDeletedToggle"){
+    showDeleted = !showDeleted;
+    renderLedger();
+  }
+});
 
 function renderPeople(){
   document.getElementById("p-tripname").value = tripSettings.name || "";
   document.getElementById("p-currency").value = tripSettings.currency || DEFAULT_CURRENCY;
+  document.getElementById("p-triplink").value = location.href;
 
   const card = document.getElementById("peopleCard");
   const sorted = [...members].sort((a,b)=> (b.active-a.active) || a.name.localeCompare(b.name));
@@ -799,31 +1035,31 @@ function renderPeople(){
     inp.addEventListener("change", async ()=>{
       const val = inp.value.trim();
       if (!val) { inp.value = nameOf(inp.dataset.id); return; }
-      try{ await updateDoc(doc(db,"members",inp.dataset.id), {name: val}); toast("Renamed"); }
+      try{ await updateDoc(memberDoc(inp.dataset.id), {name: val}); saveToast("Renamed"); }
       catch(e){ toast("Couldn't save — check your connection"); }
     });
   });
   card.querySelectorAll('[data-action="deactivate"]').forEach(btn=>{
     btn.addEventListener("click", async ()=>{
       if (!confirm(nameOf(btn.dataset.id)+" won't appear for new expenses, but stays in past ones. Continue?")) return;
-      try{ await updateDoc(doc(db,"members",btn.dataset.id), {active:false}); toast("Removed"); }
+      try{ await updateDoc(memberDoc(btn.dataset.id), {active:false}); saveToast("Removed"); }
       catch(e){ toast("Couldn't save — check your connection"); }
     });
   });
   card.querySelectorAll('[data-action="activate"]').forEach(btn=>{
     btn.addEventListener("click", async ()=>{
-      try{ await updateDoc(doc(db,"members",btn.dataset.id), {active:true}); toast("Restored"); }
+      try{ await updateDoc(memberDoc(btn.dataset.id), {active:true}); saveToast("Restored"); }
       catch(e){ toast("Couldn't save — check your connection"); }
     });
   });
 }
 
 document.getElementById("p-tripname").addEventListener("change", async (e)=>{
-  try{ await setDoc(doc(db,"settings","trip"), {name: e.target.value.trim() || DEFAULT_TRIP_NAME}, {merge:true}); }
+  try{ await setDoc(tripSettingsRef(), {name: e.target.value.trim() || DEFAULT_TRIP_NAME}, {merge:true}); }
   catch(err){ toast("Couldn't save — check your connection"); }
 });
 document.getElementById("p-currency").addEventListener("change", async (e)=>{
-  try{ await setDoc(doc(db,"settings","trip"), {currency: e.target.value}, {merge:true}); }
+  try{ await setDoc(tripSettingsRef(), {currency: e.target.value}, {merge:true}); }
   catch(err){ toast("Couldn't save — check your connection"); }
 });
 document.getElementById("p-addbtn").addEventListener("click", addPerson);
@@ -833,11 +1069,144 @@ async function addPerson(){
   const val = inp.value.trim();
   if (!val) return;
   try{
-    await addDoc(collection(db,"members"), {name: val, active: true, createdAt: Date.now()});
+    await addDoc(membersCol(), {name: val, active: true, createdAt: Date.now()});
     inp.value = "";
-    toast(val + " added");
+    saveToast(val + " added");
   }catch(e){ toast("Couldn't save — check your connection"); }
 }
+
+/* ---------- copy to clipboard (with a manual-select fallback) ---------- */
+async function copyText(text){
+  try{
+    await navigator.clipboard.writeText(text);
+    return true;
+  }catch(e){
+    try{
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    }catch(e2){ return false; }
+  }
+}
+
+document.getElementById("p-copylink").addEventListener("click", async ()=>{
+  const ok = await copyText(location.href);
+  toast(ok ? "Link copied" : "Couldn't copy — select and copy manually");
+});
+
+/* ---------- export ---------- */
+function buildTextSummary(){
+  const net = computeBalances();
+  const settlements = computeSettlements(net);
+  const active = expenses.filter(e=>!e.deleted).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+  const total = active.filter(e=>e.type!=="settlement").reduce((s,e)=>s+e.amount,0);
+  const fmtDate = ts => ts ? new Date(ts).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "";
+
+  const lines = [];
+  lines.push(`${tripSettings.name || DEFAULT_TRIP_NAME} — Expense Summary`);
+  lines.push(`Currency: ${tripSettings.currency} · Generated: ${new Date().toLocaleString(undefined,{month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"})}`);
+  lines.push("");
+  lines.push(`TOTAL SPENT: ${fmtMoney(total)}`);
+  lines.push("");
+  lines.push("SETTLE UP:");
+  if (!settlements.length) lines.push("Everyone's settled up.");
+  else settlements.forEach(s=> lines.push(`${nameOf(s.from)} → ${nameOf(s.to)}: ${fmtMoney(s.amount)}`));
+  lines.push("");
+  lines.push("BALANCES:");
+  members.filter(m=>m.active).forEach(m=>{
+    const amt = net[m.id] || 0;
+    lines.push(`${m.name}: ${Math.abs(amt)<0.01 ? "settled" : fmtMoney(Math.abs(amt)) + (amt>0 ? " back" : " owes")}`);
+  });
+  lines.push("");
+  lines.push("EXPENSE LOG:");
+  if (!active.length) lines.push("(none)");
+  else active.forEach(e=>{
+    const who = (e.participantIds||[]).map(nameOf).join(", ");
+    if (e.type === "settlement") lines.push(`[Settled] ${fmtDate(e.createdAt)} — ${nameOf(e.payerId)} paid ${who} — ${fmtMoney(e.amount)}`);
+    else lines.push(`${fmtDate(e.createdAt)} — ${e.description} — ${fmtMoney(e.amount)} — paid by ${nameOf(e.payerId)} — split: ${who}`);
+  });
+  return lines.join("\n");
+}
+
+function buildCsv(){
+  const rows = [["Date","Type","Description","Amount","PaidBy","SplitWith","AddedBy","Deleted","DeletedBy","DeletedAt"]];
+  const csvField = v => `"${String(v==null?"":v).replace(/"/g,'""')}"`;
+  [...expenses].sort((a,b)=>(a.createdAt||0)-(b.createdAt||0)).forEach(e=>{
+    rows.push([
+      e.createdAt ? new Date(e.createdAt).toISOString() : "",
+      e.type || "expense",
+      e.description || "",
+      e.amount,
+      nameOf(e.payerId),
+      (e.participantIds||[]).map(nameOf).join("; "),
+      nameOf(e.addedBy),
+      e.deleted ? "Y" : "N",
+      e.deleted ? nameOf(e.deletedBy) : "",
+      e.deleted && e.deletedAt ? new Date(e.deletedAt).toISOString() : ""
+    ].map(csvField).join(","));
+  });
+  return rows.join("\r\n");
+}
+
+document.getElementById("p-exporttext").addEventListener("click", async ()=>{
+  const ok = await copyText(buildTextSummary());
+  toast(ok ? "Summary copied — paste it anywhere" : "Couldn't copy — try again");
+});
+document.getElementById("p-exportcsv").addEventListener("click", ()=>{
+  const blob = new Blob([buildCsv()], {type:"text/csv;charset=utf-8;"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const safeName = (tripSettings.name || "trip").replace(/[^a-z0-9]+/gi,"-").toLowerCase();
+  a.href = url;
+  a.download = `${safeName}-expenses.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+});
+
+/* ---------- start a new trip ---------- */
+document.getElementById("p-newtrip").addEventListener("click", ()=>{
+  document.getElementById("nt-name").value = "";
+  document.getElementById("nt-currency").value = tripSettings.currency || DEFAULT_CURRENCY;
+  document.getElementById("nt-people").value = "";
+  document.getElementById("newTripBackdrop").classList.add("open");
+});
+document.getElementById("nt-cancel").addEventListener("click", ()=>{
+  document.getElementById("newTripBackdrop").classList.remove("open");
+});
+document.getElementById("newTripBackdrop").addEventListener("click", (e)=>{
+  if (e.target.id === "newTripBackdrop") document.getElementById("newTripBackdrop").classList.remove("open");
+});
+document.getElementById("nt-create").addEventListener("click", async ()=>{
+  const name = document.getElementById("nt-name").value.trim();
+  const currency = document.getElementById("nt-currency").value;
+  const names = document.getElementById("nt-people").value.split("\n").map(s=>s.trim()).filter(Boolean);
+  if (!name){ toast("Give the trip a name"); return; }
+  const btn = document.getElementById("nt-create");
+  btn.disabled = true; btn.textContent = "Creating…";
+  try{
+    const tripRef = await addDoc(collection(db,"trips"), {name, currency, createdAt: Date.now()});
+    if (names.length){
+      const batch = writeBatch(db);
+      names.forEach(n=>{
+        const ref = doc(collection(db,`trips/${tripRef.id}/members`));
+        batch.set(ref, {name:n, active:true, createdAt: Date.now()});
+      });
+      await batch.commit().catch(()=>{});
+    }
+    location.href = location.pathname + "?trip=" + tripRef.id;
+  }catch(e){
+    toast("Couldn't create trip — check your connection");
+    btn.disabled = false; btn.textContent = "Create trip";
+  }
+});
 
 /* ---------- boot ---------- */
 if (!needsSetup){
@@ -851,61 +1220,89 @@ async function boot(){
     import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"),
   ]);
   const { getAuth, signInAnonymously, onAuthStateChanged } = authMod;
-  const { getFirestore, collection: _collection, doc: _doc, addDoc: _addDoc, updateDoc: _updateDoc,
+  const { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
+          collection: _collection, doc: _doc, addDoc: _addDoc, updateDoc: _updateDoc,
           setDoc: _setDoc, deleteDoc: _deleteDoc, onSnapshot: _onSnapshot, writeBatch } = fsMod;
 
   window.collection = _collection; window.doc = _doc; window.addDoc = _addDoc;
   window.updateDoc = _updateDoc; window.setDoc = _setDoc; window.deleteDoc = _deleteDoc;
+  window.writeBatch = writeBatch;
 
   app = initializeApp(FIREBASE_CONFIG);
   auth = getAuth(app);
-  db = getFirestore(app);
-
   try{
-    await signInAnonymously(auth);
+    // Offline support: expenses/people added with no signal are cached locally
+    // and pushed automatically once the connection comes back.
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+    });
   }catch(e){
-    document.getElementById("setupBanner").style.display = "block";
-    document.getElementById("setupBanner").textContent =
-      "Couldn't connect to Firebase (" + e.code + "). Check that Anonymous sign-in is enabled and your config is correct.";
-    return;
+    db = getFirestore(app); // unsupported browser (e.g. old Safari private mode) — falls back to online-only
   }
 
-  onAuthStateChanged(auth, async (user)=>{
-    if (!user) return;
-    uid = user.uid;
+  initConnectionIndicator();
 
-    _onSnapshot(_collection(db,"members"), async (snap)=>{
+  async function attemptSignIn(){
+    if (auth.currentUser || navigator.onLine === false) return;
+    try{
+      await signInAnonymously(auth);
+    }catch(e){
+      document.getElementById("setupBanner").style.display = "block";
+      document.getElementById("setupBanner").textContent =
+        "Couldn't connect to Firebase (" + e.code + "). Check that Anonymous sign-in is enabled and your config is correct.";
+    }
+  }
+  window.addEventListener("online", attemptSignIn);
+
+  // Listen first so a session already cached on this device (from a prior visit)
+  // is picked up instantly — including with no signal at all — instead of
+  // forcing a fresh network sign-in on every load.
+  let subscribed = false;
+  onAuthStateChanged(auth, async (user)=>{
+    if (!user){
+      await attemptSignIn();
+      return; // onAuthStateChanged fires again once sign-in resolves
+    }
+    uid = user.uid;
+    if (subscribed) return;
+    subscribed = true;
+
+    _onSnapshot(membersCol(), async (snap)=>{
       members = snap.docs.map(d=>({id:d.id, ...d.data()}));
-      if (members.length === 0){
+      if (members.length === 0 && !TRIP_ID){
+        // seed the default/legacy trip only — a freshly-created trip starts empty on purpose
         const batch = writeBatch(db);
         SEED_MEMBERS.forEach(name=>{
-          const ref = _doc(_collection(db,"members"));
+          const ref = _doc(membersCol());
           batch.set(ref, {name, active:true, createdAt: Date.now()});
         });
         await batch.commit().catch(()=>{});
         return; // next snapshot will carry the seeded members
       }
-      if (!meId || !members.some(m=>m.id===meId)) {
-        // leave unset — user picks via the modal
-      }
       renderAll();
-      if (!meId) openWhoModal();
+      if (!meId && members.length) openWhoModal();
     }, (err)=>{
       toast("Sync error: " + err.code);
     });
 
-    _onSnapshot(_collection(db,"expenses"), (snap)=>{
+    _onSnapshot(expensesCol(), (snap)=>{
       expenses = snap.docs.map(d=>({id:d.id, ...d.data()}));
       renderAll();
     }, (err)=>{
       toast("Sync error: " + err.code);
     });
 
-    _onSnapshot(_doc(db,"settings","trip"), async (snap)=>{
+    _onSnapshot(tripSettingsRef(), async (snap)=>{
       if (snap.exists()){
         tripSettings = { name: snap.data().name || DEFAULT_TRIP_NAME, currency: snap.data().currency || DEFAULT_CURRENCY };
+        tripNotFound = false;
+      } else if (TRIP_ID){
+        // a ?trip= link pointing at nothing — don't silently invent a trip here
+        tripNotFound = true;
+        showTripNotFound();
+        return;
       } else {
-        await _setDoc(_doc(db,"settings","trip"), {name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY}).catch(()=>{});
+        await _setDoc(tripSettingsRef(), {name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY}).catch(()=>{});
         tripSettings = {name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY};
       }
       renderAll();
