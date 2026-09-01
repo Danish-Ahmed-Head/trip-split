@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#146F66" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Trip Split</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23146F66'/%3E%3Ctext x='32' y='43' font-size='30' text-anchor='middle' fill='white' font-family='sans-serif'%3E%E2%82%A8%3C/text%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Work+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#EEF2F1;
+    --surface:#FFFFFF;
+    --surface-alt:#E3E9E6;
+    --border:#CBD6D1;
+    --ink:#101E1B;
+    --ink-muted:#56675F;
+    --accent:#146F66;
+    --accent-strong:#0D5049;
+    --accent-ink:#FFFFFF;
+    --positive:#2F8E4F;
+    --positive-bg:#E4F3E7;
+    --negative:#B5453A;
+    --negative-bg:#F7E7E4;
+    --neutral-bg:#E9ECE9;
+    --shadow: 0 1px 2px rgba(16,30,27,0.06), 0 8px 24px -12px rgba(16,30,27,0.18);
+    --radius: 16px;
+    --font-display:'Fraunces', Georgia, 'Times New Roman', serif;
+    --font-body:'Work Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0E1613;
+      --surface:#16211D;
+      --surface-alt:#1D2A25;
+      --border:#2C3B34;
+      --ink:#EAF1EC;
+      --ink-muted:#9FB0A7;
+      --accent:#3FBFAE;
+      --accent-strong:#63D2C2;
+      --accent-ink:#06110F;
+      --positive:#6FCB82;
+      --positive-bg:#173325;
+      --negative:#E79285;
+      --negative-bg:#3A2019;
+      --neutral-bg:#1D2A25;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 28px -14px rgba(0,0,0,0.6);
+    }
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--font-body);
+    -webkit-font-smoothing:antialiased;
+    min-height:100vh;
+    min-height:100dvh;
+    display:flex;
+    flex-direction:column;
+    overscroll-behavior-y:none;
+  }
+  h1,h2,h3{font-family:var(--font-display);text-wrap:balance;margin:0;}
+  button{font-family:inherit;}
+  input,select{font-family:inherit;}
+  .mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+  a{color:inherit;}
+
+  /* ---- setup banner ---- */
+  #setupBanner{
+    display:none;
+    background:var(--negative-bg);
+    color:var(--negative);
+    padding:12px 16px;
+    font-size:13px;
+    line-height:1.5;
+    border-bottom:1px solid var(--border);
+  }
+  #setupBanner code{background:rgba(0,0,0,0.08);padding:1px 5px;border-radius:4px;}
+
+  /* ---- topbar ---- */
+  .topbar{
+    position:sticky; top:0; z-index:20;
+    background:var(--surface);
+    border-bottom:1px solid var(--border);
+    padding:14px 18px calc(14px + env(safe-area-inset-top,0px));
+    padding-top:calc(14px + env(safe-area-inset-top,0px));
+    display:flex; align-items:center; justify-content:space-between;
+    gap:12px;
+  }
+  .topbar .trip-name{font-size:19px; font-weight:600; letter-spacing:-0.01em;}
+  .topbar .trip-sub{font-size:12px; color:var(--ink-muted); margin-top:2px;}
+  .me-pill{
+    display:flex; align-items:center; gap:8px;
+    background:var(--surface-alt);
+    border:1px solid var(--border);
+    border-radius:999px;
+    padding:6px 12px 6px 6px;
+    cursor:pointer;
+    font-size:13px; font-weight:600;
+    flex-shrink:0;
+  }
+  .avatar{
+    width:26px; height:26px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    font-size:12px; font-weight:700; color:#fff;
+    flex-shrink:0;
+  }
+  .avatar.lg{width:40px;height:40px;font-size:16px;}
+
+  /* ---- main / views ---- */
+  main{flex:1; width:100%; max-width:560px; margin:0 auto; padding:18px 16px 96px; width:100%;}
+  .view{display:none;}
+  .view.active{display:block; animation:fade .18s ease;}
+  @keyframes fade{from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:translateY(0);}}
+
+  .card{
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    box-shadow:var(--shadow);
+  }
+  .section-label{
+    font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em;
+    color:var(--ink-muted); margin:22px 0 10px; padding:0 2px;
+  }
+  .section-label:first-child{margin-top:0;}
+
+  /* hero balance */
+  .hero{
+    padding:22px 20px; margin-bottom:4px; text-align:center;
+  }
+  .hero .label{font-size:13px; color:var(--ink-muted); font-weight:500;}
+  .hero .amount{font-family:var(--font-display); font-size:44px; font-weight:600; margin-top:6px; letter-spacing:-0.01em;}
+  .hero .amount.positive{color:var(--positive);}
+  .hero .amount.negative{color:var(--negative);}
+  .hero .amount.zero{color:var(--ink-muted);}
+  .hero .subtext{font-size:13px; color:var(--ink-muted); margin-top:6px;}
+
+  .stat-row{display:flex; gap:10px; margin-top:14px;}
+  .stat{flex:1; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px 14px;}
+  .stat .n{font-family:var(--font-mono); font-size:18px; font-weight:600;}
+  .stat .l{font-size:11px; color:var(--ink-muted); margin-top:2px; text-transform:uppercase; letter-spacing:0.04em;}
+
+  /* settle list */
+  .settle-row{
+    display:flex; align-items:center; gap:10px;
+    padding:12px 14px; border-bottom:1px solid var(--border);
+  }
+  .settle-row:last-child{border-bottom:none;}
+  .settle-flow{flex:1; display:flex; align-items:center; gap:8px; font-size:14px; min-width:0;}
+  .settle-flow .names{display:flex; flex-direction:column; gap:1px; min-width:0;}
+  .settle-flow b{font-weight:600;}
+  .settle-arrow{color:var(--ink-muted); flex-shrink:0;}
+  .settle-amt{font-family:var(--font-mono); font-weight:600; font-size:14px; white-space:nowrap;}
+  .btn-settle{
+    border:1px solid var(--border); background:var(--surface-alt); color:var(--ink);
+    font-size:12px; font-weight:600; padding:7px 11px; border-radius:8px; cursor:pointer;
+    white-space:nowrap; flex-shrink:0;
+  }
+  .btn-settle:hover{background:var(--border);}
+  .empty-note{padding:20px 14px; text-align:center; color:var(--ink-muted); font-size:13px;}
+
+  /* balances list (people tab home overview) */
+  .bal-row{display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--border);}
+  .bal-row:last-child{border-bottom:none;}
+  .bal-row .name{flex:1; font-size:14px; font-weight:500;}
+  .bal-row .amt{font-family:var(--font-mono); font-size:14px; font-weight:600;}
+
+  /* form */
+  .field{margin-bottom:16px;}
+  .field label{display:block; font-size:12px; font-weight:600; color:var(--ink-muted); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.04em;}
+  .input, select.input{
+    width:100%; padding:12px 14px; border-radius:10px; border:1px solid var(--border);
+    background:var(--surface); color:var(--ink); font-size:16px;
+  }
+  .input:focus, select.input:focus{outline:2px solid var(--accent); outline-offset:1px;}
+  .amount-wrap{position:relative;}
+  .amount-wrap .cur-prefix{position:absolute; left:14px; top:50%; transform:translateY(-50%); color:var(--ink-muted); font-family:var(--font-mono); font-size:16px; pointer-events:none;}
+  .amount-wrap input{padding-left:52px; font-family:var(--font-mono);}
+
+  .check-grid{display:flex; flex-wrap:wrap; gap:8px;}
+  .check-chip{
+    display:flex; align-items:center; gap:7px;
+    border:1px solid var(--border); background:var(--surface);
+    border-radius:999px; padding:6px 12px 6px 6px; cursor:pointer; font-size:13px; font-weight:500;
+    user-select:none;
+  }
+  .check-chip.checked{background:var(--accent); color:var(--accent-ink); border-color:var(--accent);}
+  .check-chip .avatar{width:22px;height:22px;font-size:10px;}
+  .check-chip.checked .avatar{box-shadow:0 0 0 2px rgba(255,255,255,0.5) inset;}
+  .chip-row-actions{display:flex; gap:14px; margin-top:8px;}
+  .chip-row-actions button{background:none; border:none; color:var(--accent); font-size:12px; font-weight:600; cursor:pointer; padding:0;}
+
+  .btn-primary{
+    width:100%; padding:14px; border-radius:12px; border:none;
+    background:var(--accent); color:var(--accent-ink); font-size:15px; font-weight:700;
+    cursor:pointer; margin-top:6px;
+  }
+  .btn-primary:active{background:var(--accent-strong);}
+  .btn-primary:disabled{opacity:0.5; cursor:default;}
+  .btn-secondary{
+    padding:10px 16px; border-radius:10px; border:1px solid var(--border);
+    background:var(--surface); color:var(--ink); font-size:13px; font-weight:600; cursor:pointer;
+  }
+
+  /* ledger */
+  .ledger-item{padding:14px; border-bottom:1px solid var(--border); display:flex; gap:12px;}
+  .ledger-item:last-child{border-bottom:none;}
+  .ledger-item .avatar{margin-top:2px;}
+  .ledger-main{flex:1; min-width:0;}
+  .ledger-top{display:flex; justify-content:space-between; gap:10px; align-items:baseline;}
+  .ledger-desc{font-size:14px; font-weight:600;}
+  .ledger-amt{font-family:var(--font-mono); font-weight:600; font-size:14px; white-space:nowrap;}
+  .ledger-meta{font-size:12px; color:var(--ink-muted); margin-top:3px; line-height:1.5;}
+  .ledger-del{background:none; border:none; color:var(--ink-muted); cursor:pointer; font-size:16px; padding:4px; flex-shrink:0; align-self:flex-start;}
+  .ledger-del:hover{color:var(--negative);}
+  .tag-settlement{display:inline-block; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; background:var(--neutral-bg); color:var(--ink-muted); padding:2px 6px; border-radius:5px; margin-right:6px;}
+
+  /* people tab */
+  .person-row{display:flex; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid var(--border);}
+  .person-row:last-child{border-bottom:none;}
+  .person-row input{border:none; background:none; font-size:14px; font-weight:500; color:var(--ink); flex:1; min-width:0; padding:4px 0;}
+  .person-row input:focus{outline:none; border-bottom:1px solid var(--accent);}
+  .icon-btn{background:none; border:none; color:var(--ink-muted); cursor:pointer; padding:6px; font-size:15px;}
+  .icon-btn:hover{color:var(--negative);}
+  .icon-btn.restore:hover{color:var(--positive);}
+  .inactive .person-row{opacity:0.5;}
+  .add-person-row{display:flex; gap:8px; padding:12px 14px;}
+  .add-person-row input{flex:1;}
+  .add-person-row button{background:var(--accent); color:var(--accent-ink); border:none; border-radius:8px; padding:0 16px; font-weight:700; cursor:pointer;}
+
+  /* tabbar */
+  .tabbar{
+    position:fixed; bottom:0; left:0; right:0; z-index:20;
+    background:var(--surface); border-top:1px solid var(--border);
+    display:flex; padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  .tab-btn{
+    flex:1; background:none; border:none; padding:10px 4px 8px; cursor:pointer;
+    display:flex; flex-direction:column; align-items:center; gap:3px;
+    color:var(--ink-muted); font-size:11px; font-weight:600;
+  }
+  .tab-btn svg{width:22px; height:22px;}
+  .tab-btn.active{color:var(--accent);}
+
+  /* who-are-you modal */
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(10,16,14,0.55); z-index:50;
+    display:none; align-items:flex-end; justify-content:center;
+  }
+  .modal-backdrop.open{display:flex;}
+  .modal-sheet{
+    background:var(--surface); width:100%; max-width:560px;
+    border-radius:20px 20px 0 0; padding:22px 18px calc(22px + env(safe-area-inset-bottom,0px));
+    max-height:80vh; overflow-y:auto;
+  }
+  .modal-sheet h2{font-size:20px; margin-bottom:4px;}
+  .modal-sheet .sub{font-size:13px; color:var(--ink-muted); margin-bottom:16px;}
+  .who-grid{display:flex; flex-direction:column; gap:8px;}
+  .who-option{
+    display:flex; align-items:center; gap:12px; padding:12px; border:1px solid var(--border);
+    border-radius:12px; cursor:pointer; background:var(--surface);
+  }
+  .who-option:active{background:var(--surface-alt);}
+  .who-option .name{font-weight:600; font-size:14px;}
+
+  .toast{
+    position:fixed; bottom:88px; left:50%; transform:translateX(-50%) translateY(20px);
+    background:var(--ink); color:var(--bg); padding:10px 16px; border-radius:999px;
+    font-size:13px; font-weight:600; z-index:60; opacity:0; pointer-events:none;
+    transition:opacity .2s ease, transform .2s ease; max-width:90%; text-align:center;
+  }
+  .toast.show{opacity:1; transform:translateX(-50%) translateY(0);}
+
+  @media (prefers-reduced-motion: reduce){
+    .view.active, .toast{animation:none; transition:none;}
+  }
+</style>
+</head>
+<body>
+
+<div id="setupBanner"></div>
+
+<div class="topbar">
+  <div>
+    <div class="trip-name" id="tripNameDisplay">Trip Split</div>
+    <div class="trip-sub" id="tripSubDisplay">loading…</div>
+  </div>
+  <div class="me-pill" id="mePill">
+    <span class="avatar" id="meAvatar">?</span>
+    <span id="meLabel">Who are you?</span>
+  </div>
+</div>
+
+<main>
+
+  <!-- HOME -->
+  <section class="view active" id="view-home">
+    <div class="card hero">
+      <div class="label" id="heroLabel">Your balance</div>
+      <div class="amount zero mono" id="heroAmount">—</div>
+      <div class="subtext" id="heroSub"></div>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat"><div class="n mono" id="statTotal">—</div><div class="l">Trip total</div></div>
+      <div class="stat"><div class="n mono" id="statCount">—</div><div class="l">Expenses</div></div>
+      <div class="stat"><div class="n mono" id="statPeople">—</div><div class="l">People</div></div>
+    </div>
+
+    <div class="section-label">Settle up</div>
+    <div class="card" id="settleCard"></div>
+
+    <div class="section-label">Everyone's balance</div>
+    <div class="card" id="balancesCard"></div>
+  </section>
+
+  <!-- ADD -->
+  <section class="view" id="view-add">
+    <h2 style="font-size:20px;margin-bottom:16px;">Add an expense</h2>
+    <form id="addForm">
+      <div class="field">
+        <label for="f-desc">What was it?</label>
+        <input class="input" id="f-desc" type="text" placeholder="e.g. Dinner at Salt&amp;Pepper" required maxlength="80" />
+      </div>
+      <div class="field">
+        <label for="f-amount">Amount</label>
+        <div class="amount-wrap">
+          <span class="cur-prefix" id="amountPrefix">Rs</span>
+          <input class="input" id="f-amount" type="number" inputmode="decimal" step="0.01" min="0.01" placeholder="0.00" required />
+        </div>
+      </div>
+      <div class="field">
+        <label for="f-payer">Paid by</label>
+        <select class="input" id="f-payer"></select>
+      </div>
+      <div class="field">
+        <label>Split between</label>
+        <div class="check-grid" id="f-split"></div>
+        <div class="chip-row-actions">
+          <button type="button" id="splitAll">Select all</button>
+          <button type="button" id="splitNone">Select none</button>
+        </div>
+      </div>
+      <button class="btn-primary" type="submit">Add expense</button>
+    </form>
+  </section>
+
+  <!-- LEDGER -->
+  <section class="view" id="view-ledger">
+    <h2 style="font-size:20px;margin-bottom:16px;">Ledger</h2>
+    <div class="card" id="ledgerCard"></div>
+  </section>
+
+  <!-- PEOPLE -->
+  <section class="view" id="view-people">
+    <h2 style="font-size:20px;margin-bottom:16px;">Trip &amp; people</h2>
+
+    <div class="section-label">Trip settings</div>
+    <div class="card" style="padding:14px;">
+      <div class="field" style="margin-bottom:12px;">
+        <label for="p-tripname">Trip name</label>
+        <input class="input" id="p-tripname" type="text" maxlength="40" />
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label for="p-currency">Currency</label>
+        <select class="input" id="p-currency">
+          <option value="PKR">PKR — Pakistani Rupee</option>
+          <option value="USD">USD — US Dollar</option>
+          <option value="EUR">EUR — Euro</option>
+          <option value="GBP">GBP — British Pound</option>
+          <option value="AED">AED — UAE Dirham</option>
+          <option value="SAR">SAR — Saudi Riyal</option>
+          <option value="INR">INR — Indian Rupee</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="section-label">People</div>
+    <div class="card" id="peopleCard"></div>
+    <div class="card" style="margin-top:10px;">
+      <div class="add-person-row">
+        <input class="input" id="p-newname" type="text" placeholder="Add a person…" maxlength="30" />
+        <button id="p-addbtn" type="button">Add</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<nav class="tabbar">
+  <button class="tab-btn active" data-view="home">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 4l8 7.5"/><path d="M6 10v9a1 1 0 0 0 1 1h3v-6h4v6h3a1 1 0 0 0 1-1v-9"/></svg>
+    Home
+  </button>
+  <button class="tab-btn" data-view="add">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+    Add
+  </button>
+  <button class="tab-btn" data-view="ledger">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h14v16l-3.5-2-3.5 2-3.5-2L5 20V4Z"/><path d="M8 9h8M8 13h5"/></svg>
+    Ledger
+  </button>
+  <button class="tab-btn" data-view="people">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 19c0-3.3 2.9-5.5 6.5-5.5s6.5 2.2 6.5 5.5"/><circle cx="17.5" cy="8.5" r="2.5"/><path d="M15.7 13.7c2.9.4 4.8 2.3 4.8 5.3"/></svg>
+    People
+  </button>
+</nav>
+
+<div class="modal-backdrop" id="whoBackdrop">
+  <div class="modal-sheet">
+    <h2>Who are you?</h2>
+    <div class="sub">This is remembered on this phone only — pick your name.</div>
+    <div class="who-grid" id="whoGrid"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script type="module">
+/* =========================================================================
+   FIREBASE CONFIG — paste your project's web config here.
+   Firebase Console → Project settings → General → Your apps → Web app → SDK setup
+   These are public client identifiers, not secrets; Firestore Security Rules
+   are what actually protect the data (see setup notes shared alongside this file).
+   ========================================================================= */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBNpyrEzaU2x-3z8Xf1xhuQzri5f8eNCVg",
+  authDomain: "spark-610ee.firebaseapp.com",
+  projectId: "spark-610ee",
+  storageBucket: "spark-610ee.firebasestorage.app",
+  messagingSenderId: "505264928481",
+  appId: "1:505264928481:web:421d7ea9aeffcea03c29a0"
+};
+
+const SEED_MEMBERS = ["Khizar", "Raheel", "Saad", "Adil", "Danish", "Abdul Hadi", "Feroz"];
+const DEFAULT_CURRENCY = "PKR";
+const DEFAULT_TRIP_NAME = "Trip Split";
+
+/* ---------- setup guard ---------- */
+const needsSetup = !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey === "YOUR_API_KEY";
+if (needsSetup) {
+  const b = document.getElementById("setupBanner");
+  b.style.display = "block";
+  b.innerHTML = "Setup needed: open <code>index.html</code> and paste your Firebase web config into <code>FIREBASE_CONFIG</code> near the bottom of the file, then reload.";
+}
+
+let app, auth, db;
+let uid = null;
+let members = [];      // {id, name, active}
+let expenses = [];      // {id, type, description, amount, payerId, participantIds, createdAt, addedBy}
+let tripSettings = { name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY };
+
+const safeStorage = {
+  get(key){ try{ return localStorage.getItem(key); }catch(e){ return null; } },
+  set(key, val){ try{ localStorage.setItem(key, val); }catch(e){ /* storage unavailable; identity just won't persist */ } }
+};
+let meId = safeStorage.get("tripSplitMeId") || null;
+
+const AVATAR_COLORS = ["#146F66","#B5453A","#8E6F14","#3A5FB5","#7A4CB5","#B5148A","#4C8E14","#14868E"];
+function colorFor(id){
+  let h = 0; for (const c of String(id)) h = (h*31 + c.charCodeAt(0)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+function initials(name){
+  return (name||"?").trim().split(/\s+/).slice(0,2).map(w=>w[0]?.toUpperCase()||"").join("") || "?";
+}
+function fmtMoney(n){
+  const v = Number(n)||0;
+  try{
+    return new Intl.NumberFormat(undefined,{style:"currency",currency:tripSettings.currency,maximumFractionDigits:2}).format(v);
+  }catch(e){
+    return tripSettings.currency + " " + v.toFixed(2);
+  }
+}
+function toast(msg){
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(()=>t.classList.remove("show"), 2200);
+}
+function nameOf(id){ const m = members.find(m=>m.id===id); return m ? m.name : "Someone"; }
+
+/* ---------- tabs ---------- */
+document.querySelectorAll(".tab-btn").forEach(btn=>{
+  btn.addEventListener("click", ()=>{
+    document.querySelectorAll(".tab-btn").forEach(b=>b.classList.remove("active"));
+    document.querySelectorAll(".view").forEach(v=>v.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("view-"+btn.dataset.view).classList.add("active");
+  });
+});
+
+/* ---------- who-are-you ---------- */
+const whoBackdrop = document.getElementById("whoBackdrop");
+document.getElementById("mePill").addEventListener("click", openWhoModal);
+function openWhoModal(){
+  const grid = document.getElementById("whoGrid");
+  grid.innerHTML = "";
+  members.filter(m=>m.active).forEach(m=>{
+    const el = document.createElement("div");
+    el.className = "who-option";
+    el.innerHTML = `<span class="avatar" style="background:${colorFor(m.id)}">${initials(m.name)}</span><span class="name">${escapeHtml(m.name)}</span>`;
+    el.addEventListener("click", ()=>{
+      meId = m.id;
+      safeStorage.set("tripSplitMeId", meId);
+      whoBackdrop.classList.remove("open");
+      renderAll();
+    });
+    grid.appendChild(el);
+  });
+  whoBackdrop.classList.add("open");
+}
+whoBackdrop.addEventListener("click", (e)=>{ if(e.target===whoBackdrop) whoBackdrop.classList.remove("open"); });
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+/* ---------- balances + settle-up ---------- */
+function computeBalances(){
+  const net = {};
+  members.forEach(m=>net[m.id]=0);
+  expenses.forEach(e=>{
+    if (!(e.payerId in net)) net[e.payerId] = 0;
+    net[e.payerId] += e.amount;
+    const ids = e.participantIds || [];
+    if (ids.length){
+      const share = e.amount / ids.length;
+      ids.forEach(pid=>{
+        if (!(pid in net)) net[pid] = 0;
+        net[pid] -= share;
+      });
+    }
+  });
+  return net;
+}
+function computeSettlements(net){
+  const creditors = [], debtors = [];
+  Object.entries(net).forEach(([id, amt])=>{
+    if (amt > 0.01) creditors.push({id, amount: amt});
+    else if (amt < -0.01) debtors.push({id, amount: -amt});
+  });
+  creditors.sort((a,b)=>b.amount-a.amount);
+  debtors.sort((a,b)=>b.amount-a.amount);
+  const out = [];
+  let i=0, j=0;
+  while (i<debtors.length && j<creditors.length){
+    const pay = Math.min(debtors[i].amount, creditors[j].amount);
+    out.push({from: debtors[i].id, to: creditors[j].id, amount: pay});
+    debtors[i].amount -= pay;
+    creditors[j].amount -= pay;
+    if (debtors[i].amount < 0.01) i++;
+    if (creditors[j].amount < 0.01) j++;
+  }
+  return out;
+}
+
+/* ---------- rendering ---------- */
+function renderAll(){
+  renderTopbar();
+  renderHome();
+  renderAddForm();
+  renderLedger();
+  renderPeople();
+}
+
+function renderTopbar(){
+  document.getElementById("tripNameDisplay").textContent = tripSettings.name || DEFAULT_TRIP_NAME;
+  document.getElementById("tripSubDisplay").textContent = members.filter(m=>m.active).length + " people · " + tripSettings.currency;
+  const me = members.find(m=>m.id===meId);
+  const avatar = document.getElementById("meAvatar");
+  const label = document.getElementById("meLabel");
+  if (me){
+    avatar.textContent = initials(me.name);
+    avatar.style.background = colorFor(me.id);
+    label.textContent = me.name;
+  } else {
+    avatar.textContent = "?";
+    avatar.style.background = "var(--ink-muted)";
+    label.textContent = "Who are you?";
+  }
+}
+
+function renderHome(){
+  const net = computeBalances();
+  const heroAmount = document.getElementById("heroAmount");
+  const heroSub = document.getElementById("heroSub");
+  const heroLabel = document.getElementById("heroLabel");
+  if (!meId || !(meId in net)){
+    heroLabel.textContent = "Your balance";
+    heroAmount.textContent = "Tap “Who are you?” above";
+    heroAmount.className = "amount zero mono";
+    heroSub.textContent = "";
+  } else {
+    const mine = net[meId] || 0;
+    heroLabel.textContent = mine > 0.01 ? "You are owed" : mine < -0.01 ? "You owe" : "You're settled up";
+    heroAmount.textContent = Math.abs(mine) < 0.01 ? "—" : fmtMoney(Math.abs(mine));
+    heroAmount.className = "amount mono " + (mine > 0.01 ? "positive" : mine < -0.01 ? "negative" : "zero");
+    heroSub.textContent = Math.abs(mine) < 0.01 ? "Nice, no money owed either way." : (mine > 0.01 ? "Overall, across the whole trip." : "Overall, across the whole trip.");
+  }
+
+  const total = expenses.filter(e=>e.type!=="settlement").reduce((s,e)=>s+e.amount,0);
+  document.getElementById("statTotal").textContent = fmtMoney(total);
+  document.getElementById("statCount").textContent = expenses.filter(e=>e.type!=="settlement").length;
+  document.getElementById("statPeople").textContent = members.filter(m=>m.active).length;
+
+  const settlements = computeSettlements(net);
+  const settleCard = document.getElementById("settleCard");
+  if (!settlements.length){
+    settleCard.innerHTML = `<div class="empty-note">Everyone's settled up. 🎉</div>`;
+  } else {
+    settleCard.innerHTML = settlements.map(s=>`
+      <div class="settle-row">
+        <div class="settle-flow">
+          <span class="avatar" style="background:${colorFor(s.from)}">${initials(nameOf(s.from))}</span>
+          <div class="names">
+            <b>${escapeHtml(nameOf(s.from))}</b>
+          </div>
+          <span class="settle-arrow">→</span>
+          <div class="names">
+            <b>${escapeHtml(nameOf(s.to))}</b>
+          </div>
+        </div>
+        <span class="settle-amt mono">${fmtMoney(s.amount)}</span>
+        <button class="btn-settle" data-from="${s.from}" data-to="${s.to}" data-amt="${s.amount}">Mark paid</button>
+      </div>
+    `).join("");
+    settleCard.querySelectorAll(".btn-settle").forEach(btn=>{
+      btn.addEventListener("click", async ()=>{
+        const from = btn.dataset.from, to = btn.dataset.to, amt = parseFloat(btn.dataset.amt);
+        btn.disabled = true; btn.textContent = "Saving…";
+        try{
+          await addDoc(collection(db,"expenses"), {
+            type: "settlement",
+            description: "Settlement",
+            amount: amt,
+            payerId: from,
+            participantIds: [to],
+            createdAt: Date.now(),
+            addedBy: meId || from
+          });
+          toast(nameOf(from) + " → " + nameOf(to) + " recorded");
+        }catch(e){
+          toast("Couldn't save — check your connection");
+          btn.disabled = false; btn.textContent = "Mark paid";
+        }
+      });
+    });
+  }
+
+  const balCard = document.getElementById("balancesCard");
+  const rows = members.filter(m=>m.active).map(m=>{
+    const amt = net[m.id] || 0;
+    const cls = amt > 0.01 ? "positive" : amt < -0.01 ? "negative" : "";
+    const text = Math.abs(amt) < 0.01 ? "settled" : fmtMoney(Math.abs(amt)) + (amt>0 ? " back" : " owes");
+    return `<div class="bal-row">
+      <span class="avatar" style="background:${colorFor(m.id)}">${initials(m.name)}</span>
+      <span class="name">${escapeHtml(m.name)}</span>
+      <span class="amt mono" style="color:${amt>0.01?'var(--positive)':amt<-0.01?'var(--negative)':'var(--ink-muted)'}">${text}</span>
+    </div>`;
+  }).join("");
+  balCard.innerHTML = rows || `<div class="empty-note">No people yet — add some in the People tab.</div>`;
+}
+
+function renderAddForm(){
+  const payerSel = document.getElementById("f-payer");
+  const activeMembers = members.filter(m=>m.active);
+  const prevPayer = payerSel.value;
+  payerSel.innerHTML = activeMembers.map(m=>`<option value="${m.id}">${escapeHtml(m.name)}</option>`).join("");
+  if (activeMembers.some(m=>m.id===meId)) payerSel.value = meId;
+  else if (activeMembers.some(m=>m.id===prevPayer)) payerSel.value = prevPayer;
+
+  const splitWrap = document.getElementById("f-split");
+  const existingChecked = new Set(
+    Array.from(splitWrap.querySelectorAll(".check-chip.checked")).map(el=>el.dataset.id)
+  );
+  const isFirstRender = splitWrap.dataset.rendered !== "1";
+  splitWrap.innerHTML = activeMembers.map(m=>{
+    const checked = isFirstRender ? true : existingChecked.has(m.id);
+    return `<div class="check-chip ${checked?'checked':''}" data-id="${m.id}">
+      <span class="avatar" style="background:${colorFor(m.id)}">${initials(m.name)}</span>
+      <span>${escapeHtml(m.name)}</span>
+    </div>`;
+  }).join("");
+  splitWrap.dataset.rendered = "1";
+  splitWrap.querySelectorAll(".check-chip").forEach(chip=>{
+    chip.addEventListener("click", ()=>chip.classList.toggle("checked"));
+  });
+
+  document.getElementById("amountPrefix").textContent = currencySymbolGuess(tripSettings.currency);
+}
+function currencySymbolGuess(code){
+  try{
+    const parts = new Intl.NumberFormat(undefined,{style:"currency",currency:code}).formatToParts(0);
+    const sym = parts.find(p=>p.type==="currency");
+    return sym ? sym.value : code;
+  }catch(e){ return code; }
+}
+
+document.getElementById("splitAll").addEventListener("click", ()=>{
+  document.querySelectorAll("#f-split .check-chip").forEach(c=>c.classList.add("checked"));
+});
+document.getElementById("splitNone").addEventListener("click", ()=>{
+  document.querySelectorAll("#f-split .check-chip").forEach(c=>c.classList.remove("checked"));
+});
+
+document.getElementById("addForm").addEventListener("submit", async (e)=>{
+  e.preventDefault();
+  const desc = document.getElementById("f-desc").value.trim();
+  const amount = parseFloat(document.getElementById("f-amount").value);
+  const payerId = document.getElementById("f-payer").value;
+  const participantIds = Array.from(document.querySelectorAll("#f-split .check-chip.checked")).map(c=>c.dataset.id);
+  if (!desc || !amount || amount<=0 || !payerId){ toast("Fill in all fields"); return; }
+  if (!participantIds.length){ toast("Pick at least one person to split with"); return; }
+  const submitBtn = e.target.querySelector("button[type=submit]");
+  submitBtn.disabled = true; submitBtn.textContent = "Adding…";
+  try{
+    await addDoc(collection(db,"expenses"), {
+      type: "expense",
+      description: desc,
+      amount,
+      payerId,
+      participantIds,
+      createdAt: Date.now(),
+      addedBy: meId || payerId
+    });
+    document.getElementById("f-desc").value = "";
+    document.getElementById("f-amount").value = "";
+    toast("Expense added");
+    document.querySelector('.tab-btn[data-view="home"]').click();
+  }catch(err){
+    toast("Couldn't save — check your connection");
+  }finally{
+    submitBtn.disabled = false; submitBtn.textContent = "Add expense";
+  }
+});
+
+function renderLedger(){
+  const card = document.getElementById("ledgerCard");
+  const sorted = [...expenses].sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  if (!sorted.length){
+    card.innerHTML = `<div class="empty-note">No expenses yet. Add the first one!</div>`;
+    return;
+  }
+  card.innerHTML = sorted.map(e=>{
+    const isSettlement = e.type === "settlement";
+    const participantNames = (e.participantIds||[]).map(nameOf).join(", ");
+    const date = e.createdAt ? new Date(e.createdAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "";
+    return `<div class="ledger-item">
+      <span class="avatar" style="background:${colorFor(e.payerId)}">${initials(nameOf(e.payerId))}</span>
+      <div class="ledger-main">
+        <div class="ledger-top">
+          <div class="ledger-desc">${isSettlement?'<span class="tag-settlement">Settled</span>':''}${escapeHtml(e.description)}</div>
+          <div class="ledger-amt">${fmtMoney(e.amount)}</div>
+        </div>
+        <div class="ledger-meta">${isSettlement
+          ? `${escapeHtml(nameOf(e.payerId))} paid ${escapeHtml(participantNames)} · ${date}`
+          : `${escapeHtml(nameOf(e.payerId))} paid · split with ${escapeHtml(participantNames)} · ${date}`}</div>
+      </div>
+      <button class="ledger-del" data-id="${e.id}" title="Delete">✕</button>
+    </div>`;
+  }).join("");
+  card.querySelectorAll(".ledger-del").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      if (!confirm("Delete this entry?")) return;
+      try{ await deleteDoc(doc(db,"expenses",btn.dataset.id)); toast("Deleted"); }
+      catch(e){ toast("Couldn't delete — check your connection"); }
+    });
+  });
+}
+
+function renderPeople(){
+  document.getElementById("p-tripname").value = tripSettings.name || "";
+  document.getElementById("p-currency").value = tripSettings.currency || DEFAULT_CURRENCY;
+
+  const card = document.getElementById("peopleCard");
+  const sorted = [...members].sort((a,b)=> (b.active-a.active) || a.name.localeCompare(b.name));
+  card.innerHTML = sorted.map(m=>`
+    <div class="${m.active?'':'inactive'}">
+      <div class="person-row">
+        <span class="avatar" style="background:${colorFor(m.id)}">${initials(m.name)}</span>
+        <input type="text" value="${escapeHtml(m.name)}" data-id="${m.id}" class="rename-input" ${m.active?'':'disabled'} />
+        ${m.active
+          ? `<button class="icon-btn" data-id="${m.id}" data-action="deactivate" title="Remove from active list">✕</button>`
+          : `<button class="icon-btn restore" data-id="${m.id}" data-action="activate" title="Restore">↺</button>`}
+      </div>
+    </div>
+  `).join("");
+
+  card.querySelectorAll(".rename-input").forEach(inp=>{
+    inp.addEventListener("change", async ()=>{
+      const val = inp.value.trim();
+      if (!val) { inp.value = nameOf(inp.dataset.id); return; }
+      try{ await updateDoc(doc(db,"members",inp.dataset.id), {name: val}); toast("Renamed"); }
+      catch(e){ toast("Couldn't save — check your connection"); }
+    });
+  });
+  card.querySelectorAll('[data-action="deactivate"]').forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      if (!confirm(nameOf(btn.dataset.id)+" won't appear for new expenses, but stays in past ones. Continue?")) return;
+      try{ await updateDoc(doc(db,"members",btn.dataset.id), {active:false}); toast("Removed"); }
+      catch(e){ toast("Couldn't save — check your connection"); }
+    });
+  });
+  card.querySelectorAll('[data-action="activate"]').forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      try{ await updateDoc(doc(db,"members",btn.dataset.id), {active:true}); toast("Restored"); }
+      catch(e){ toast("Couldn't save — check your connection"); }
+    });
+  });
+}
+
+document.getElementById("p-tripname").addEventListener("change", async (e)=>{
+  try{ await setDoc(doc(db,"settings","trip"), {name: e.target.value.trim() || DEFAULT_TRIP_NAME}, {merge:true}); }
+  catch(err){ toast("Couldn't save — check your connection"); }
+});
+document.getElementById("p-currency").addEventListener("change", async (e)=>{
+  try{ await setDoc(doc(db,"settings","trip"), {currency: e.target.value}, {merge:true}); }
+  catch(err){ toast("Couldn't save — check your connection"); }
+});
+document.getElementById("p-addbtn").addEventListener("click", addPerson);
+document.getElementById("p-newname").addEventListener("keydown", (e)=>{ if(e.key==="Enter"){ e.preventDefault(); addPerson(); }});
+async function addPerson(){
+  const inp = document.getElementById("p-newname");
+  const val = inp.value.trim();
+  if (!val) return;
+  try{
+    await addDoc(collection(db,"members"), {name: val, active: true, createdAt: Date.now()});
+    inp.value = "";
+    toast(val + " added");
+  }catch(e){ toast("Couldn't save — check your connection"); }
+}
+
+/* ---------- boot ---------- */
+if (!needsSetup){
+  boot();
+}
+
+async function boot(){
+  const [{initializeApp}, authMod, fsMod] = await Promise.all([
+    import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js"),
+    import("https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js"),
+    import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"),
+  ]);
+  const { getAuth, signInAnonymously, onAuthStateChanged } = authMod;
+  const { getFirestore, collection: _collection, doc: _doc, addDoc: _addDoc, updateDoc: _updateDoc,
+          setDoc: _setDoc, deleteDoc: _deleteDoc, onSnapshot: _onSnapshot, writeBatch } = fsMod;
+
+  window.collection = _collection; window.doc = _doc; window.addDoc = _addDoc;
+  window.updateDoc = _updateDoc; window.setDoc = _setDoc; window.deleteDoc = _deleteDoc;
+
+  app = initializeApp(FIREBASE_CONFIG);
+  auth = getAuth(app);
+  db = getFirestore(app);
+
+  try{
+    await signInAnonymously(auth);
+  }catch(e){
+    document.getElementById("setupBanner").style.display = "block";
+    document.getElementById("setupBanner").textContent =
+      "Couldn't connect to Firebase (" + e.code + "). Check that Anonymous sign-in is enabled and your config is correct.";
+    return;
+  }
+
+  onAuthStateChanged(auth, async (user)=>{
+    if (!user) return;
+    uid = user.uid;
+
+    _onSnapshot(_collection(db,"members"), async (snap)=>{
+      members = snap.docs.map(d=>({id:d.id, ...d.data()}));
+      if (members.length === 0){
+        const batch = writeBatch(db);
+        SEED_MEMBERS.forEach(name=>{
+          const ref = _doc(_collection(db,"members"));
+          batch.set(ref, {name, active:true, createdAt: Date.now()});
+        });
+        await batch.commit().catch(()=>{});
+        return; // next snapshot will carry the seeded members
+      }
+      if (!meId || !members.some(m=>m.id===meId)) {
+        // leave unset — user picks via the modal
+      }
+      renderAll();
+      if (!meId) openWhoModal();
+    }, (err)=>{
+      toast("Sync error: " + err.code);
+    });
+
+    _onSnapshot(_collection(db,"expenses"), (snap)=>{
+      expenses = snap.docs.map(d=>({id:d.id, ...d.data()}));
+      renderAll();
+    }, (err)=>{
+      toast("Sync error: " + err.code);
+    });
+
+    _onSnapshot(_doc(db,"settings","trip"), async (snap)=>{
+      if (snap.exists()){
+        tripSettings = { name: snap.data().name || DEFAULT_TRIP_NAME, currency: snap.data().currency || DEFAULT_CURRENCY };
+      } else {
+        await _setDoc(_doc(db,"settings","trip"), {name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY}).catch(()=>{});
+        tripSettings = {name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY};
+      }
+      renderAll();
+    }, (err)=>{
+      toast("Sync error: " + err.code);
+    });
+  });
+}
+</script>
+</body>
+</html>
