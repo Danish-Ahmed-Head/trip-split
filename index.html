@@ -305,6 +305,50 @@
   @media (prefers-reduced-motion: reduce){
     .view.active, .toast{animation:none; transition:none;}
   }
+
+  /* ---- sign-in screen ---- */
+  #signinScreen{
+    position:fixed; inset:0; z-index:80; background:var(--bg);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    padding:24px; text-align:center; gap:16px;
+  }
+  #signinScreen h1{font-size:26px;}
+  #signinScreen p{font-size:14px; color:var(--ink-muted); max-width:320px; line-height:1.6;}
+  .btn-google{
+    display:flex; align-items:center; gap:10px; justify-content:center;
+    background:var(--surface); color:var(--ink); border:1px solid var(--border);
+    border-radius:12px; padding:13px 22px; font-size:15px; font-weight:600; cursor:pointer;
+  }
+  .btn-google:hover{background:var(--surface-alt);}
+  .btn-google svg{width:18px;height:18px;flex-shrink:0;}
+
+  /* ---- claim-identity modal ---- */
+  .who-option.claim-new{border-style:dashed; color:var(--ink-muted); justify-content:center;}
+
+  /* ---- pending confirmations ---- */
+  .pend-row{display:flex; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid var(--border);}
+  .pend-row:last-child{border-bottom:none;}
+  .pend-flow{flex:1; font-size:13px; min-width:0;}
+  .pend-flow b{font-weight:600;}
+  .pend-actions{display:flex; gap:6px; flex-shrink:0;}
+  .btn-confirm{background:var(--positive); color:#fff; border:none; border-radius:8px; padding:7px 11px; font-size:12px; font-weight:700; cursor:pointer;}
+  .btn-dispute{background:none; border:1px solid var(--border); color:var(--negative); border-radius:8px; padding:7px 11px; font-size:12px; font-weight:600; cursor:pointer;}
+
+  .status-tag{display:inline-block; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; padding:2px 6px; border-radius:5px; margin-right:6px;}
+  .status-tag.pending{background:var(--neutral-bg); color:var(--ink-muted);}
+  .status-tag.confirmed{background:var(--positive-bg); color:var(--positive);}
+  .status-tag.disputed{background:var(--negative-bg); color:var(--negative);}
+
+  /* ---- balance sheet drill-in ---- */
+  .hero.tappable{cursor:pointer;}
+  .balsheet-group{padding:4px 0;}
+  .balsheet-row{padding:12px 14px; border-bottom:1px solid var(--border);}
+  .balsheet-row:last-child{border-bottom:none;}
+  .balsheet-top{display:flex; align-items:center; gap:10px;}
+  .balsheet-top .name{flex:1; font-size:14px; font-weight:600;}
+  .balsheet-top .amt{font-family:var(--font-mono); font-weight:600; font-size:14px;}
+  .balsheet-items{margin:8px 0 0 36px; display:flex; flex-direction:column; gap:4px;}
+  .balsheet-item{font-size:12px; color:var(--ink-muted); display:flex; justify-content:space-between; gap:10px;}
 </style>
 </head>
 <body>
@@ -318,6 +362,17 @@
     <p style="font-size:14px; color:var(--ink-muted); line-height:1.6; margin:0 0 18px;">This trip link doesn't match anything — it may be mistyped or the trip was never created.</p>
     <a href="." class="btn-primary" style="display:block; text-decoration:none; box-sizing:border-box;">Go to the main trip</a>
   </div>
+</div>
+
+<div id="signinScreen">
+  <div class="avatar lg" style="background:var(--accent);">₨</div>
+  <h1>Trip Split</h1>
+  <p>Sign in with Google so only you can add your own expenses and only the person you paid can confirm it — no one else can act as you.</p>
+  <button type="button" class="btn-google" id="googleSigninBtn">
+    <svg viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.1 8 3l6-6C34 5.1 29.3 3 24 3 12.4 3 3 12.4 3 24s9.4 21 21 21 21-9.4 21-21c0-1.4-.1-2.7-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.9 18.9 13 24 13c3.1 0 5.8 1.1 8 3l6-6C34 5.1 29.3 3 24 3 16.3 3 9.7 7.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 45c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 36.4 26.7 37 24 37c-5.2 0-9.6-3.3-11.2-8l-6.5 5C9.6 40.6 16.3 45 24 45z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.2 4.2-4.1 5.6l6.2 5.2C40.9 36 44 30.5 44 24c0-1.4-.1-2.7-.4-3.5z"/></svg>
+    Continue with Google
+  </button>
+  <p id="signinError" style="color:var(--negative); display:none;"></p>
 </div>
 
 <div class="topbar" id="topbar">
@@ -335,7 +390,7 @@
 
   <!-- HOME -->
   <section class="view active" id="view-home">
-    <div class="card hero">
+    <div class="card hero tappable" id="heroCard">
       <div class="label" id="heroLabel">Your balance</div>
       <div class="amount zero mono" id="heroAmount">—</div>
       <div class="subtext" id="heroSub"></div>
@@ -346,6 +401,9 @@
       <div class="stat"><div class="n mono" id="statCount">—</div><div class="l">Expenses</div></div>
       <div class="stat"><div class="n mono" id="statPeople">—</div><div class="l">People</div></div>
     </div>
+
+    <div class="section-label" id="pendingConfLabel" style="display:none;">Awaiting your confirmation</div>
+    <div class="card" id="pendingConfCard" style="display:none;"></div>
 
     <div class="section-label">Settle up</div>
     <div class="card" id="settleCard"></div>
@@ -472,9 +530,21 @@
 
 <div class="modal-backdrop" id="whoBackdrop">
   <div class="modal-sheet">
-    <h2>Who are you?</h2>
-    <div class="sub">This is remembered on this phone only — pick your name.</div>
+    <h2>Which one is you?</h2>
+    <div class="sub">Link your Google account to your name in this trip. This is one-time — once claimed, only you can act as this person.</div>
     <div class="who-grid" id="whoGrid"></div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="balsheetBackdrop">
+  <div class="modal-sheet" style="max-height:88vh;">
+    <h2>Your balance sheet</h2>
+    <div class="sub" id="balsheetSub"></div>
+    <div class="section-label" style="margin-top:4px;">Assets — owed to you</div>
+    <div class="card" id="assetsCard"></div>
+    <div class="section-label">Liabilities — you owe</div>
+    <div class="card" id="liabilitiesCard"></div>
+    <button type="button" class="btn-secondary" id="balsheetClose" style="width:100%; margin-top:14px;">Close</button>
   </div>
 </div>
 
@@ -537,7 +607,9 @@ const DEFAULT_TRIP_NAME = "Trip Split";
 const TRIP_ID = new URLSearchParams(location.search).get("trip") || null;
 const MEMBERS_PATH = TRIP_ID ? `trips/${TRIP_ID}/members` : "members";
 const EXPENSES_PATH = TRIP_ID ? `trips/${TRIP_ID}/expenses` : "expenses";
-const STORAGE_KEY = TRIP_ID ? ("tripSplitMeId_" + TRIP_ID) : "tripSplitMeId";
+// reverse index so Security Rules can resolve "which member is this signed-in
+// user" by a direct doc lookup (rules can't run a "find where authUid==uid" query)
+const MEMBERLINKS_PATH = TRIP_ID ? `trips/${TRIP_ID}/memberLinks` : "memberLinks";
 
 /* ---------- setup guard ---------- */
 const needsSetup = !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey === "YOUR_API_KEY";
@@ -545,28 +617,25 @@ if (needsSetup) {
   const b = document.getElementById("setupBanner");
   b.style.display = "block";
   b.innerHTML = "Setup needed: open <code>index.html</code> and paste your Firebase web config into <code>FIREBASE_CONFIG</code> near the bottom of the file, then reload.";
+  document.getElementById("signinScreen").style.display = "none";
 }
 
 let app, auth, db;
 let uid = null;
 let members = [];      // {id, name, active}
 let expenses = [];      // {id, type, description, amount, payerId, participantIds, createdAt, addedBy}
-let tripSettings = { name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY };
+let tripSettings = { name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY, ownerUid: null };
 let tripNotFound = false;
 let editingExpenseId = null;
 let showDeleted = false;
 
-const safeStorage = {
-  get(key){ try{ return localStorage.getItem(key); }catch(e){ return null; } },
-  set(key, val){ try{ localStorage.setItem(key, val); }catch(e){ /* storage unavailable; identity just won't persist */ } },
-  remove(key){ try{ localStorage.removeItem(key); }catch(e){} }
-};
-let meId = safeStorage.get(STORAGE_KEY) || null;
+let meId = null; // derived from members.find(m => m.authUid === auth.currentUser.uid) — no longer stored client-side
 
 function membersCol(){ return collection(db, MEMBERS_PATH); }
 function expensesCol(){ return collection(db, EXPENSES_PATH); }
 function memberDoc(id){ return doc(db, MEMBERS_PATH, id); }
 function expenseDoc(id){ return doc(db, EXPENSES_PATH, id); }
+function memberLinkDoc(forUid){ return doc(db, MEMBERLINKS_PATH, forUid); }
 function tripSettingsRef(){ return TRIP_ID ? doc(db, "trips", TRIP_ID) : doc(db, "settings", "trip"); }
 
 const AVATAR_COLORS = ["#146F66","#B5453A","#8E6F14","#3A5FB5","#7A4CB5","#B5148A","#4C8E14","#14868E"];
@@ -610,6 +679,9 @@ function initConnectionIndicator(){
 function saveToast(actionLabel){
   toast(navigator.onLine ? actionLabel : actionLabel + " offline — will sync later");
 }
+function errorToast(e, fallback){
+  toast(e && e.code === "permission-denied" ? "Not allowed — that's not yours to change" : fallback);
+}
 
 function showTripNotFound(){
   document.getElementById("tripNotFoundScreen").style.display = "block";
@@ -629,27 +701,95 @@ document.querySelectorAll(".tab-btn").forEach(btn=>{
   });
 });
 
-/* ---------- who-are-you ---------- */
+/* ---------- claim identity (Google account -> existing/new member) ---------- */
 const whoBackdrop = document.getElementById("whoBackdrop");
-document.getElementById("mePill").addEventListener("click", openWhoModal);
+document.getElementById("mePill").addEventListener("click", ()=>{
+  if (meId){
+    if (confirm("Sign out of Trip Split on this device?")) signOut(auth);
+  } else {
+    openWhoModal();
+  }
+});
 function openWhoModal(){
   const grid = document.getElementById("whoGrid");
   grid.innerHTML = "";
-  members.filter(m=>m.active).forEach(m=>{
+  members.filter(m=>m.active && !m.authUid).forEach(m=>{
     const el = document.createElement("div");
     el.className = "who-option";
     el.innerHTML = `<span class="avatar" style="background:${colorFor(m.id)}">${initials(m.name)}</span><span class="name">${escapeHtml(m.name)}</span>`;
-    el.addEventListener("click", ()=>{
-      meId = m.id;
-      safeStorage.set("tripSplitMeId", meId);
-      whoBackdrop.classList.remove("open");
-      renderAll();
+    el.addEventListener("click", async ()=>{
+      try{
+        const batch = writeBatch(db);
+        batch.update(memberDoc(m.id), {authUid: uid});
+        batch.set(memberLinkDoc(uid), {memberId: m.id, claimedAt: Date.now()});
+        await batch.commit();
+        whoBackdrop.classList.remove("open");
+      }catch(e){ errorToast(e, "Couldn't claim — check your connection"); }
     });
     grid.appendChild(el);
   });
+  const addEl = document.createElement("div");
+  addEl.className = "who-option claim-new";
+  addEl.textContent = "+ I'm not on this list";
+  addEl.addEventListener("click", async ()=>{
+    const name = prompt("Your name for this trip:", auth.currentUser?.displayName || "");
+    if (!name || !name.trim()) return;
+    try{
+      const ref = doc(membersCol());
+      const batch = writeBatch(db);
+      batch.set(ref, {name: name.trim(), active:true, createdAt: Date.now(), authUid: uid});
+      batch.set(memberLinkDoc(uid), {memberId: ref.id, claimedAt: Date.now()});
+      await batch.commit();
+      whoBackdrop.classList.remove("open");
+    }catch(e){ toast("Couldn't save — check your connection"); }
+  });
+  grid.appendChild(addEl);
   whoBackdrop.classList.add("open");
 }
 whoBackdrop.addEventListener("click", (e)=>{ if(e.target===whoBackdrop) whoBackdrop.classList.remove("open"); });
+
+/* ---------- balance sheet (per-person, private to the viewer) ---------- */
+const balsheetBackdrop = document.getElementById("balsheetBackdrop");
+document.getElementById("heroCard").addEventListener("click", ()=>{
+  if (!meId) { openWhoModal(); return; }
+  renderBalanceSheet();
+  balsheetBackdrop.classList.add("open");
+});
+document.getElementById("balsheetClose").addEventListener("click", ()=> balsheetBackdrop.classList.remove("open"));
+balsheetBackdrop.addEventListener("click", (e)=>{ if(e.target===balsheetBackdrop) balsheetBackdrop.classList.remove("open"); });
+
+function balsheetRowHtml(otherId, amount, items){
+  const sortedItems = [...items].sort((a,b)=>(b.date||0)-(a.date||0));
+  return `<div class="balsheet-row">
+    <div class="balsheet-top">
+      <span class="avatar" style="background:${colorFor(otherId)}">${initials(nameOf(otherId))}</span>
+      <span class="name">${escapeHtml(nameOf(otherId))}</span>
+      <span class="amt mono">${fmtMoney(amount)}</span>
+    </div>
+    <div class="balsheet-items">
+      ${sortedItems.map(it=>`<div class="balsheet-item"><span>${escapeHtml(it.desc)}</span><span class="mono">${fmtMoney(Math.abs(it.amount))}</span></div>`).join("")}
+    </div>
+  </div>`;
+}
+function renderBalanceSheet(){
+  document.getElementById("balsheetSub").textContent = "Private to you — only you can see this full breakdown.";
+  const pair = computePairwiseBalances(meId);
+  const assets = [], liabilities = [];
+  Object.entries(pair).forEach(([otherId, v])=>{
+    if (v.net > 0.01) assets.push({otherId, amount:v.net, items:v.items});
+    else if (v.net < -0.01) liabilities.push({otherId, amount:-v.net, items:v.items});
+  });
+  assets.sort((a,b)=>b.amount-a.amount);
+  liabilities.sort((a,b)=>b.amount-a.amount);
+  const assetsCard = document.getElementById("assetsCard");
+  const liabilitiesCard = document.getElementById("liabilitiesCard");
+  assetsCard.innerHTML = assets.length
+    ? assets.map(a=>balsheetRowHtml(a.otherId, a.amount, a.items)).join("")
+    : `<div class="empty-note">No one owes you right now.</div>`;
+  liabilitiesCard.innerHTML = liabilities.length
+    ? liabilities.map(l=>balsheetRowHtml(l.otherId, l.amount, l.items)).join("")
+    : `<div class="empty-note">You don't owe anyone right now.</div>`;
+}
 
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -659,7 +799,7 @@ function escapeHtml(s){
 function computeBalances(){
   const net = {};
   members.forEach(m=>net[m.id]=0);
-  expenses.filter(e=>!e.deleted).forEach(e=>{
+  expenses.filter(e=>!e.deleted && (e.type!=="settlement" || e.confirmedBy)).forEach(e=>{
     if (!(e.payerId in net)) net[e.payerId] = 0;
     net[e.payerId] += e.amount;
     const ids = e.participantIds || [];
@@ -672,6 +812,41 @@ function computeBalances(){
     }
   });
   return net;
+}
+function pendingSettlementBetween(fromId, toId){
+  return expenses.find(e=>!e.deleted && e.type==="settlement" && !e.confirmedBy && !e.disputed
+    && e.payerId===fromId && (e.participantIds||[])[0]===toId);
+}
+function myPendingConfirmations(){
+  return expenses.filter(e=>!e.deleted && e.type==="settlement" && !e.confirmedBy && !e.disputed
+    && (e.participantIds||[])[0]===meId);
+}
+function computePairwiseBalances(forId){
+  const pair = {}; // { otherMemberId: { net, items:[{desc,amount,date}] } }
+  function bump(otherId, delta, item){
+    if (!otherId || otherId===forId) return;
+    if (!pair[otherId]) pair[otherId] = {net:0, items:[]};
+    pair[otherId].net += delta;
+    pair[otherId].items.push(item);
+  }
+  expenses.filter(e=>!e.deleted).forEach(e=>{
+    if (e.type==="settlement"){
+      if (!e.confirmedBy) return; // only agreed-on settlements move the balance
+      const debtor = e.payerId, creditor = (e.participantIds||[])[0];
+      if (forId===creditor) bump(debtor, -e.amount, {desc:"Settlement received", amount:-e.amount, date:e.confirmedAt||e.createdAt});
+      else if (forId===debtor) bump(creditor, +e.amount, {desc:"Settlement paid", amount:+e.amount, date:e.confirmedAt||e.createdAt});
+    } else {
+      const ids = e.participantIds||[];
+      if (!ids.length) return;
+      const share = e.amount/ids.length;
+      if (forId===e.payerId){
+        ids.forEach(pid=>{ if (pid!==forId) bump(pid, +share, {desc:e.description, amount:share, date:e.createdAt}); });
+      } else if (ids.includes(forId)){
+        bump(e.payerId, -share, {desc:e.description, amount:-share, date:e.createdAt});
+      }
+    }
+  });
+  return pair;
 }
 function computeSettlements(net){
   const creditors = [], debtors = [];
@@ -727,7 +902,7 @@ function renderHome(){
   const heroLabel = document.getElementById("heroLabel");
   if (!meId || !(meId in net)){
     heroLabel.textContent = "Your balance";
-    heroAmount.textContent = "Tap “Who are you?” above";
+    heroAmount.textContent = "Link your name above";
     heroAmount.className = "amount zero mono";
     heroSub.textContent = "";
   } else {
@@ -735,7 +910,7 @@ function renderHome(){
     heroLabel.textContent = mine > 0.01 ? "You are owed" : mine < -0.01 ? "You owe" : "You're settled up";
     heroAmount.textContent = Math.abs(mine) < 0.01 ? "—" : fmtMoney(Math.abs(mine));
     heroAmount.className = "amount mono " + (mine > 0.01 ? "positive" : mine < -0.01 ? "negative" : "zero");
-    heroSub.textContent = Math.abs(mine) < 0.01 ? "Nice, no money owed either way." : (mine > 0.01 ? "Overall, across the whole trip." : "Overall, across the whole trip.");
+    heroSub.textContent = Math.abs(mine) < 0.01 ? "Nice, no money owed either way. Tap for the full breakdown." : "Tap for the full breakdown — who, how much, why.";
   }
 
   const liveExpenses = expenses.filter(e=>!e.deleted && e.type!=="settlement");
@@ -749,7 +924,13 @@ function renderHome(){
   if (!settlements.length){
     settleCard.innerHTML = `<div class="empty-note">Everyone's settled up. 🎉</div>`;
   } else {
-    settleCard.innerHTML = settlements.map(s=>`
+    settleCard.innerHTML = settlements.map(s=>{
+      const pending = pendingSettlementBetween(s.from, s.to);
+      let action;
+      if (pending) action = `<span class="status-tag pending">Pending</span>`;
+      else if (meId===s.from) action = `<button class="btn-settle" data-from="${s.from}" data-to="${s.to}" data-amt="${s.amount}">Mark paid</button>`;
+      else action = `<span class="empty-note" style="padding:0; font-size:12px;">Waiting on ${escapeHtml(nameOf(s.from))}</span>`;
+      return `
       <div class="settle-row">
         <div class="settle-flow">
           <span class="avatar" style="background:${colorFor(s.from)}">${initials(nameOf(s.from))}</span>
@@ -762,9 +943,9 @@ function renderHome(){
           </div>
         </div>
         <span class="settle-amt mono">${fmtMoney(s.amount)}</span>
-        <button class="btn-settle" data-from="${s.from}" data-to="${s.to}" data-amt="${s.amount}">Mark paid</button>
+        ${action}
       </div>
-    `).join("");
+    `;}).join("");
     settleCard.querySelectorAll(".btn-settle").forEach(btn=>{
       btn.addEventListener("click", async ()=>{
         const from = btn.dataset.from, to = btn.dataset.to, amt = parseFloat(btn.dataset.amt);
@@ -777,13 +958,55 @@ function renderHome(){
             payerId: from,
             participantIds: [to],
             createdAt: Date.now(),
-            addedBy: meId || from
+            addedBy: meId || from,
+            confirmedBy: null,
+            confirmedAt: null
           });
-          saveToast(nameOf(from) + " → " + nameOf(to) + " recorded");
+          saveToast("Marked paid — waiting for " + nameOf(to) + " to confirm");
         }catch(e){
-          toast("Couldn't save — check your connection");
+          errorToast(e, "Couldn't save — check your connection");
           btn.disabled = false; btn.textContent = "Mark paid";
         }
+      });
+    });
+  }
+
+  const pendingLabel = document.getElementById("pendingConfLabel");
+  const pendingCard = document.getElementById("pendingConfCard");
+  const myPending = meId ? myPendingConfirmations() : [];
+  if (!myPending.length){
+    pendingLabel.style.display = "none";
+    pendingCard.style.display = "none";
+  } else {
+    pendingLabel.style.display = "block";
+    pendingCard.style.display = "block";
+    pendingCard.innerHTML = myPending.map(e=>`
+      <div class="pend-row">
+        <span class="avatar" style="background:${colorFor(e.payerId)}">${initials(nameOf(e.payerId))}</span>
+        <div class="pend-flow"><b>${escapeHtml(nameOf(e.payerId))}</b> says they paid you <span class="mono">${fmtMoney(e.amount)}</span></div>
+        <div class="pend-actions">
+          <button class="btn-confirm" data-id="${e.id}">Confirm</button>
+          <button class="btn-dispute" data-id="${e.id}">Dispute</button>
+        </div>
+      </div>
+    `).join("");
+    pendingCard.querySelectorAll(".btn-confirm").forEach(btn=>{
+      btn.addEventListener("click", async ()=>{
+        btn.disabled = true;
+        try{
+          await updateDoc(expenseDoc(btn.dataset.id), {confirmedBy: meId, confirmedAt: Date.now()});
+          saveToast("Confirmed received");
+        }catch(e){ errorToast(e, "Couldn't save — check your connection"); btn.disabled = false; }
+      });
+    });
+    pendingCard.querySelectorAll(".btn-dispute").forEach(btn=>{
+      btn.addEventListener("click", async ()=>{
+        if (!confirm("Dispute this? It'll go back to unpaid until you two sort it out.")) return;
+        btn.disabled = true;
+        try{
+          await updateDoc(expenseDoc(btn.dataset.id), {disputed:true, disputedBy: meId, disputedAt: Date.now()});
+          saveToast("Marked as disputed");
+        }catch(e){ errorToast(e, "Couldn't save — check your connection"); btn.disabled = false; }
       });
     });
   }
@@ -939,17 +1162,23 @@ function ledgerItemHtml(e, isDeleted){
   const editedMeta = (!isDeleted && e.editedAt)
     ? `<div class="ledger-meta edited-meta">Edited by ${escapeHtml(nameOf(e.editedBy))} · ${new Date(e.editedAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}</div>`
     : "";
-  const actions = isDeleted
+  const canModify = e.addedBy===meId || (tripSettings.ownerUid && uid===tripSettings.ownerUid);
+  const actions = !canModify ? "" : isDeleted
     ? `<button class="ledger-del ledger-restore" data-id="${e.id}" title="Restore">↺</button>`
     : `<div class="ledger-actions">
         ${!isSettlement ? `<button class="ledger-edit" data-id="${e.id}" title="Edit">✎</button>` : ""}
         <button class="ledger-del" data-id="${e.id}" title="Delete">✕</button>
       </div>`;
+  const settleStatus = isSettlement
+    ? (e.confirmedBy ? '<span class="status-tag confirmed">Confirmed</span>'
+      : e.disputed ? '<span class="status-tag disputed">Disputed</span>'
+      : '<span class="status-tag pending">Pending</span>')
+    : "";
   return `<div class="ledger-item ${isDeleted?'ledger-item-deleted':''}">
     <span class="avatar" style="background:${colorFor(e.payerId)}">${initials(nameOf(e.payerId))}</span>
     <div class="ledger-main">
       <div class="ledger-top">
-        <div class="ledger-desc">${isSettlement?'<span class="tag-settlement">Settled</span>':''}${escapeHtml(e.description)}</div>
+        <div class="ledger-desc">${settleStatus}${escapeHtml(e.description)}</div>
         <div class="ledger-amt">${fmtMoney(e.amount)}</div>
       </div>
       <div class="ledger-meta">${isSettlement
@@ -983,7 +1212,7 @@ function renderLedger(){
       try{
         await updateDoc(expenseDoc(btn.dataset.id), {deleted:true, deletedBy: meId||null, deletedAt: Date.now()});
         saveToast("Deleted");
-      }catch(e){ toast("Couldn't delete — check your connection"); }
+      }catch(e){ errorToast(e, "Couldn't delete — check your connection"); }
     });
   });
 
@@ -1002,7 +1231,7 @@ function renderLedger(){
       try{
         await updateDoc(expenseDoc(btn.dataset.id), {deleted:false, deletedBy:null, deletedAt:null});
         saveToast("Restored");
-      }catch(e){ toast("Couldn't restore — check your connection"); }
+      }catch(e){ errorToast(e, "Couldn't restore — check your connection"); }
     });
   });
 }
@@ -1037,31 +1266,31 @@ function renderPeople(){
       const val = inp.value.trim();
       if (!val) { inp.value = nameOf(inp.dataset.id); return; }
       try{ await updateDoc(memberDoc(inp.dataset.id), {name: val}); saveToast("Renamed"); }
-      catch(e){ toast("Couldn't save — check your connection"); }
+      catch(e){ errorToast(e, "Couldn't save — check your connection"); inp.value = nameOf(inp.dataset.id); }
     });
   });
   card.querySelectorAll('[data-action="deactivate"]').forEach(btn=>{
     btn.addEventListener("click", async ()=>{
       if (!confirm(nameOf(btn.dataset.id)+" won't appear for new expenses, but stays in past ones. Continue?")) return;
       try{ await updateDoc(memberDoc(btn.dataset.id), {active:false}); saveToast("Removed"); }
-      catch(e){ toast("Couldn't save — check your connection"); }
+      catch(e){ errorToast(e, "Couldn't save — check your connection"); }
     });
   });
   card.querySelectorAll('[data-action="activate"]').forEach(btn=>{
     btn.addEventListener("click", async ()=>{
       try{ await updateDoc(memberDoc(btn.dataset.id), {active:true}); saveToast("Restored"); }
-      catch(e){ toast("Couldn't save — check your connection"); }
+      catch(e){ errorToast(e, "Couldn't save — check your connection"); }
     });
   });
 }
 
 document.getElementById("p-tripname").addEventListener("change", async (e)=>{
   try{ await setDoc(tripSettingsRef(), {name: e.target.value.trim() || DEFAULT_TRIP_NAME}, {merge:true}); }
-  catch(err){ toast("Couldn't save — check your connection"); }
+  catch(err){ errorToast(err, "Couldn't save — check your connection"); }
 });
 document.getElementById("p-currency").addEventListener("change", async (e)=>{
   try{ await setDoc(tripSettingsRef(), {currency: e.target.value}, {merge:true}); }
-  catch(err){ toast("Couldn't save — check your connection"); }
+  catch(err){ errorToast(err, "Couldn't save — check your connection"); }
 });
 document.getElementById("p-addbtn").addEventListener("click", addPerson);
 document.getElementById("p-newname").addEventListener("keydown", (e)=>{ if(e.key==="Enter"){ e.preventDefault(); addPerson(); }});
@@ -1193,7 +1422,7 @@ document.getElementById("nt-create").addEventListener("click", async ()=>{
   const btn = document.getElementById("nt-create");
   btn.disabled = true; btn.textContent = "Creating…";
   try{
-    const tripRef = await addDoc(collection(db,"trips"), {name, currency, createdAt: Date.now()});
+    const tripRef = await addDoc(collection(db,"trips"), {name, currency, createdAt: Date.now(), ownerUid: uid});
     if (names.length){
       const batch = writeBatch(db);
       names.forEach(n=>{
@@ -1220,14 +1449,14 @@ async function boot(){
     import("https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js"),
     import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"),
   ]);
-  const { getAuth, signInAnonymously, onAuthStateChanged } = authMod;
+  const { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } = authMod;
   const { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
           collection: _collection, doc: _doc, addDoc: _addDoc, updateDoc: _updateDoc,
           setDoc: _setDoc, deleteDoc: _deleteDoc, onSnapshot: _onSnapshot, writeBatch, runTransaction } = fsMod;
 
   window.collection = _collection; window.doc = _doc; window.addDoc = _addDoc;
   window.updateDoc = _updateDoc; window.setDoc = _setDoc; window.deleteDoc = _deleteDoc;
-  window.writeBatch = writeBatch;
+  window.writeBatch = writeBatch; window.signOut = signOut;
 
   app = initializeApp(FIREBASE_CONFIG);
   auth = getAuth(app);
@@ -1243,27 +1472,38 @@ async function boot(){
 
   initConnectionIndicator();
 
-  async function attemptSignIn(){
-    if (auth.currentUser || navigator.onLine === false) return;
+  const signinScreen = document.getElementById("signinScreen");
+  const signinError = document.getElementById("signinError");
+  const provider = new GoogleAuthProvider();
+  document.getElementById("googleSigninBtn").addEventListener("click", async ()=>{
+    signinError.style.display = "none";
     try{
-      await signInAnonymously(auth);
+      await signInWithPopup(auth, provider);
     }catch(e){
-      document.getElementById("setupBanner").style.display = "block";
-      document.getElementById("setupBanner").textContent =
-        "Couldn't connect to Firebase (" + e.code + "). Check that Anonymous sign-in is enabled and your config is correct.";
+      if (e.code === "auth/popup-blocked" || e.code === "auth/operation-not-supported-in-this-environment"){
+        try{ await signInWithRedirect(auth, provider); }catch(e2){ /* surfaced below via getRedirectResult on reload */ }
+      } else if (e.code !== "auth/popup-closed-by-user" && e.code !== "auth/cancelled-popup-request"){
+        signinError.textContent = "Couldn't sign in (" + e.code + "). Check that Google sign-in is enabled for this project.";
+        signinError.style.display = "block";
+      }
     }
-  }
-  window.addEventListener("online", attemptSignIn);
+  });
+  getRedirectResult(auth).catch(e=>{
+    signinError.textContent = "Couldn't sign in (" + e.code + ").";
+    signinError.style.display = "block";
+  });
 
   // Listen first so a session already cached on this device (from a prior visit)
   // is picked up instantly — including with no signal at all — instead of
   // forcing a fresh network sign-in on every load.
   let subscribed = false;
+  let ownerClaimTried = false;
   onAuthStateChanged(auth, async (user)=>{
     if (!user){
-      await attemptSignIn();
-      return; // onAuthStateChanged fires again once sign-in resolves
+      signinScreen.style.display = "flex";
+      return;
     }
+    signinScreen.style.display = "none";
     uid = user.uid;
     if (subscribed) return;
     subscribed = true;
@@ -1286,7 +1526,7 @@ async function boot(){
       const batch = writeBatch(db);
       SEED_MEMBERS.forEach(name=>{
         const ref = _doc(membersCol());
-        batch.set(ref, {name, active:true, createdAt: Date.now()});
+        batch.set(ref, {name, active:true, createdAt: Date.now(), authUid: null});
       });
       await batch.commit().catch(()=>{});
     }
@@ -1298,12 +1538,9 @@ async function boot(){
         await seedMembersOnce();
         return; // the seed's own writes re-trigger this snapshot
       }
-      if (meId && !members.some(m=>m.id===meId && m.active)){
-        // saved identity points at someone inactive/removed (e.g. a deduped
-        // duplicate) — don't silently misattribute expenses, ask again
-        meId = null;
-        safeStorage.remove(STORAGE_KEY);
-      }
+      // identity is derived fresh every snapshot from the Google account link,
+      // never cached client-side — so it can't drift or be spoofed locally
+      meId = members.find(m=>m.active && m.authUid===uid)?.id || null;
       renderAll();
       if (!meId && members.length) openWhoModal();
     }, (err)=>{
@@ -1319,16 +1556,23 @@ async function boot(){
 
     _onSnapshot(tripSettingsRef(), async (snap)=>{
       if (snap.exists()){
-        tripSettings = { name: snap.data().name || DEFAULT_TRIP_NAME, currency: snap.data().currency || DEFAULT_CURRENCY };
+        const data = snap.data();
+        tripSettings = { name: data.name || DEFAULT_TRIP_NAME, currency: data.currency || DEFAULT_CURRENCY, ownerUid: data.ownerUid || null };
         tripNotFound = false;
+        if (!data.ownerUid && !ownerClaimTried){
+          // legacy/default trip predates ownership — first person to load it after
+          // this rollout claims it, one time only (rules only allow this when unset)
+          ownerClaimTried = true;
+          await _setDoc(tripSettingsRef(), {ownerUid: uid}, {merge:true}).catch(()=>{});
+        }
       } else if (TRIP_ID){
         // a ?trip= link pointing at nothing — don't silently invent a trip here
         tripNotFound = true;
         showTripNotFound();
         return;
       } else {
-        await _setDoc(tripSettingsRef(), {name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY}, {merge:true}).catch(()=>{});
-        tripSettings = {name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY};
+        await _setDoc(tripSettingsRef(), {name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY, ownerUid: uid}, {merge:true}).catch(()=>{});
+        tripSettings = {name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY, ownerUid: uid};
       }
       renderAll();
     }, (err)=>{
