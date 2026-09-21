@@ -1503,6 +1503,12 @@ async function boot(){
       signinScreen.style.display = "flex";
       return;
     }
+    if (user.isAnonymous){
+      // a session from before Google Sign-In existed — never let a stale
+      // anonymous identity claim a member or act as anyone; force a real sign-in
+      await signOut(auth);
+      return; // onAuthStateChanged fires again with user=null
+    }
     signinScreen.style.display = "none";
     uid = user.uid;
     if (subscribed) return;
