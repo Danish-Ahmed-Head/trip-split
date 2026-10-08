@@ -11,6 +11,9 @@ A shared-expense tracker for a group — split costs, see who owes who, and sett
 - A private **Balance Sheet** per person — itemized Assets (who owes you, how much, for what) and Liabilities (what you owe, to whom, for what)
 - **Two-step settlements**: the payer marks "I paid," and only the person who was actually paid can confirm it — no one can clear a debt on someone else's behalf
 - Full audit trail: every add, edit, delete, and settlement confirmation records who and when
+- Search the ledger by item, person or amount
+- Close a trip when it's finished (owner only): no new expenses, settling up still works, reopen any time. This block is enforced in the app UI only, not by the security rules.
+- Installable: use "Add to Home Screen" / "Install" in your browser for an app-style launcher (web app manifest and icons; no offline page caching beyond what Firestore stores)
 - Multiple trips from one app, each with its own shareable link
 - Works offline — expenses added with no signal sync automatically once you're back online
 - Export the ledger as CSV or a text summary
@@ -67,4 +70,6 @@ Ask whoever's maintaining this for the current links, or check the session histo
 
 Phase 1 (real auth, authorization, two-step settlements, balance sheet) is live and verified with one real account. Not yet verified: a second real account going through sign-in → claim → confirm, and the negative-case authorization checks (can someone confirm a settlement that isn't theirs, edit someone else's expense, etc.) against a second identity. See the Test Plan tab for the open items.
 
-Phase 2 (recurring expenses, push notifications, installable PWA, multi-trip dashboard) and Phase 3 (JazzCash/Easypaisa/Raast payment integration, receipt photos, unequal splits) are planned, not started.
+Also shipped since: ledger search, close/reopen trip, and an installable web app manifest.
+
+Phase 2 (recurring expenses, push notifications, multi-trip dashboard, expense categories) and Phase 3 (JazzCash/Easypaisa/Raast payment integration, receipt photos, unequal splits) are planned, not started.

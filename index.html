@@ -4,6 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#146F66" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <title>Trip Split</title>
@@ -390,6 +392,7 @@
 
   <!-- HOME -->
   <section class="view active" id="view-home">
+    <div class="empty-note card" id="closedBanner" style="display:none; margin-bottom:12px; padding:12px 14px; color:var(--ink);">This trip is closed. No new expenses can be added, but you can still settle up. The owner can reopen it from the People tab.</div>
     <div class="card hero tappable" id="heroCard">
       <div class="label" id="heroLabel">Your balance</div>
       <div class="amount zero mono" id="heroAmount">—</div>
@@ -447,6 +450,7 @@
   <!-- LEDGER -->
   <section class="view" id="view-ledger">
     <h2 style="font-size:20px;margin-bottom:16px;">Ledger</h2>
+    <input class="input" id="ledgerSearch" type="search" placeholder="Search by item, person or amount…" aria-label="Search the ledger" style="margin-bottom:12px;" />
     <div class="card" id="ledgerCard"></div>
     <button type="button" id="ledgerDeletedToggle" class="deleted-toggle" style="display:none;"></button>
     <div class="card" id="ledgerDeletedList" style="display:none; margin-top:8px;"></div>
@@ -504,6 +508,10 @@
     <div class="card" style="padding:14px;">
       <div style="font-size:12px; color:var(--ink-muted); margin-bottom:10px;">Going on another trip later? Start a fresh one — same app, a new link, separate people and expenses.</div>
       <button type="button" class="btn-secondary" id="p-newtrip" style="width:100%;">Start a new trip →</button>
+      <div id="closeTripWrap" style="display:none; margin-top:10px;">
+        <div style="font-size:12px; color:var(--ink-muted); margin-bottom:10px;">Finished with this trip? Closing stops new expenses being added. Settling up still works, and you can reopen it any time. Only the trip owner sees this.</div>
+        <button type="button" class="btn-secondary" id="p-closetrip" style="width:100%;"></button>
+      </div>
     </div>
   </section>
 
@@ -624,7 +632,7 @@ let app, auth, db;
 let uid = null;
 let members = [];      // {id, name, active}
 let expenses = [];      // {id, type, description, amount, payerId, participantIds, createdAt, addedBy}
-let tripSettings = { name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY, ownerUid: null };
+let tripSettings = { name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY, ownerUid: null, closed: false };
 let tripNotFound = false;
 let editingExpenseId = null;
 let showDeleted = false;
@@ -880,7 +888,11 @@ function renderAll(){
 
 function renderTopbar(){
   document.getElementById("tripNameDisplay").textContent = tripSettings.name || DEFAULT_TRIP_NAME;
-  document.getElementById("tripSubDisplay").textContent = members.filter(m=>m.active).length + " people · " + tripSettings.currency;
+  document.getElementById("tripSubDisplay").textContent = members.filter(m=>m.active).length + " people · " + tripSettings.currency + (tripSettings.closed ? " · closed" : "");
+  document.getElementById("closedBanner").style.display = tripSettings.closed ? "block" : "none";
+  const isOwner = !!tripSettings.ownerUid && uid === tripSettings.ownerUid;
+  document.getElementById("closeTripWrap").style.display = isOwner ? "block" : "none";
+  document.getElementById("p-closetrip").textContent = tripSettings.closed ? "Reopen this trip" : "Close this trip";
   const me = members.find(m=>m.id===meId);
   const avatar = document.getElementById("meAvatar");
   const label = document.getElementById("meLabel");
@@ -1114,6 +1126,7 @@ document.getElementById("addForm").addEventListener("submit", async (e)=>{
   const amount = parseFloat(document.getElementById("f-amount").value);
   const payerId = document.getElementById("f-payer").value;
   const participantIds = Array.from(document.querySelectorAll("#f-split .check-chip.checked")).map(c=>c.dataset.id);
+  if (tripSettings.closed){ toast("This trip is closed. The owner can reopen it in People."); return; }
   if (!desc || !amount || amount<=0 || !payerId){ toast("Fill in all fields"); return; }
   if (!participantIds.length){ toast("Pick at least one person to split with"); return; }
   const submitBtn = e.target.querySelector("button[type=submit]");
@@ -1196,12 +1209,18 @@ function renderLedger(){
   const toggle = document.getElementById("ledgerDeletedToggle");
   const deletedWrap = document.getElementById("ledgerDeletedList");
 
-  const active = expenses.filter(e=>!e.deleted).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
-  const deleted = expenses.filter(e=>e.deleted).sort((a,b)=>(b.deletedAt||0)-(a.deletedAt||0));
+  const q = (document.getElementById("ledgerSearch").value || "").trim().toLowerCase();
+  const matches = e => !q || [
+    e.description, nameOf(e.payerId), (e.participantIds||[]).map(nameOf).join(" "),
+    String(e.amount), fmtMoney(e.amount)
+  ].some(s => String(s||"").toLowerCase().includes(q));
+
+  const active = expenses.filter(e=>!e.deleted && matches(e)).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  const deleted = expenses.filter(e=>e.deleted && matches(e)).sort((a,b)=>(b.deletedAt||0)-(a.deletedAt||0));
 
   card.innerHTML = active.length
     ? active.map(e=>ledgerItemHtml(e,false)).join("")
-    : `<div class="empty-note">${deleted.length ? "No active expenses — see deleted below." : "No expenses yet. Add the first one!"}</div>`;
+    : `<div class="empty-note">${q ? "Nothing matches that search." : deleted.length ? "No active expenses — see deleted below." : "No expenses yet. Add the first one!"}</div>`;
 
   card.querySelectorAll(".ledger-edit").forEach(btn=>{
     btn.addEventListener("click", ()=> enterEditMode(btn.dataset.id));
@@ -1235,6 +1254,7 @@ function renderLedger(){
     });
   });
 }
+document.getElementById("ledgerSearch").addEventListener("input", renderLedger);
 document.addEventListener("click", (e)=>{
   if (e.target && e.target.id === "ledgerDeletedToggle"){
     showDeleted = !showDeleted;
@@ -1402,6 +1422,14 @@ document.getElementById("p-exportcsv").addEventListener("click", ()=>{
 });
 
 /* ---------- start a new trip ---------- */
+document.getElementById("p-closetrip").addEventListener("click", async ()=>{
+  const closing = !tripSettings.closed;
+  if (closing && !confirm("Close this trip? Nobody can add new expenses until you reopen it. Settling up still works.")) return;
+  try{
+    await setDoc(tripSettingsRef(), {closed: closing}, {merge:true});
+    saveToast(closing ? "Trip closed" : "Trip reopened");
+  }catch(err){ errorToast(err, "Couldn't save — check your connection"); }
+});
 document.getElementById("p-newtrip").addEventListener("click", ()=>{
   document.getElementById("nt-name").value = "";
   document.getElementById("nt-currency").value = tripSettings.currency || DEFAULT_CURRENCY;
@@ -1566,7 +1594,7 @@ async function boot(){
     _onSnapshot(tripSettingsRef(), async (snap)=>{
       if (snap.exists()){
         const data = snap.data();
-        tripSettings = { name: data.name || DEFAULT_TRIP_NAME, currency: data.currency || DEFAULT_CURRENCY, ownerUid: data.ownerUid || null };
+        tripSettings = { name: data.name || DEFAULT_TRIP_NAME, currency: data.currency || DEFAULT_CURRENCY, ownerUid: data.ownerUid || null, closed: !!data.closed };
         tripNotFound = false;
         if (!data.ownerUid && !ownerClaimTried){
           // legacy/default trip predates ownership — first person to load it after
