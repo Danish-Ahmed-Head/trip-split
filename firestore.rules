@@ -1,21 +1,21 @@
 rules_version = '2';
 
-// Trip Split — Firestore Security Rules
+// Trip Split: Firestore Security Rules
 //
-// Companion to the SDD tab of the Engineering & SDLC Documentation doc.
-// Covers both the default/legacy trip (flat paths: /members, /expenses,
-// /settings/trip) and trips created later via "Start a new trip"
-// (nested under /trips/{tripId}/...).
+// Covers the default/legacy trip (flat paths: /members, /expenses, /recurring,
+// /settings/trip) and trips created via "Start a new trip" (nested under
+// /trips/{tripId}/...). Per-user data lives at /users/{uid}.
 //
-// Core idea: a signed-in user's identity as a *trip member* is resolved via
-// a reverse-index doc at memberLinks/{uid} -> {memberId}, written once when
-// that user claims their name (see index.html's claim flow). Rules can only
-// look up documents by an exact path, not run a "find where X==Y" query, so
-// this index is what lets a rule ask "which member is this Google account?"
+// Identity: a signed-in user is linked to a trip member by a doc at
+// memberLinks/{uid} -> {memberId}. Rules can only look documents up by exact
+// path (no "find where authUid == uid"), so this index is what lets a rule ask
+// "which member is this Google account?". The link is only accepted when the
+// member doc itself already carries that uid (checked with getAfter so the
+// claim and the link can be written in one batch).
 //
-// Deploy: paste this whole file into Firebase Console -> Firestore Database
-// -> Rules, for project "spark-610ee", then Publish. Or, with the Firebase
-// CLI installed and `firebase login` run once: `firebase deploy --only firestore:rules`.
+// Tests: tests/rules.test.mjs (npm run test:rules, needs Java for the emulator).
+// Deploy: paste into Firebase Console -> Firestore Database -> Rules -> Publish,
+// or `firebase deploy --only firestore:rules`.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -24,66 +24,117 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Resolves the member id linked to a memberLinks/{uid} doc at the given path,
-    // or null if this signed-in user hasn't claimed a member in this trip yet.
-    function linkedMemberId(linksDocPath) {
-      return exists(linksDocPath) ? get(linksDocPath).data.memberId : null;
+    // true when `memberId` is the member this signed-in user is linked to
+    function isMember(linksDocPath, memberId) {
+      return memberId != null
+        && exists(linksDocPath)
+        && get(linksDocPath).data.memberId == memberId;
     }
 
-    // Fields like authUid/confirmedBy/ownerUid are absent (not explicitly null)
-    // on any document written before this authorization model existed, so
-    // "still unclaimed" must check for absence, not just an explicit null.
+    // Fields such as authUid/confirmedBy/ownerUid are ABSENT (not null) on
+    // documents written before this model existed, so check absence too.
     function isUnset(data, field) {
       return !(field in data) || data[field] == null;
     }
 
+    // field exists AND equals value (a plain == on a missing field is an error)
+    function fieldIs(data, field, value) {
+      return field in data && data[field] == value;
+    }
+
     function isOwnerOf(tripDocPath) {
-      return exists(tripDocPath) && get(tripDocPath).data.ownerUid == request.auth.uid;
+      return exists(tripDocPath) && fieldIs(get(tripDocPath).data, 'ownerUid', request.auth.uid);
+    }
+
+    // A closed trip takes no new expenses (settling up still works).
+    function isTripOpen(tripDocPath) {
+      return !exists(tripDocPath) || get(tripDocPath).data.get('closed', false) != true;
     }
 
     // ================= default / legacy trip (flat paths) =================
 
     match /memberLinks/{uid} {
       allow read: if signedIn();
-      // one-time: you may only ever create your own link doc, and only once
+      // once, for yourself, and only for a member doc that already carries your uid
       allow create: if signedIn() && request.auth.uid == uid
-        && !exists(/databases/$(database)/documents/memberLinks/$(uid));
+        && !exists(/databases/$(database)/documents/memberLinks/$(uid))
+        && request.resource.data.memberId is string
+        && getAfter(/databases/$(database)/documents/members/$(request.resource.data.memberId)).data.authUid == request.auth.uid;
       allow update, delete: if false;
     }
 
     match /members/{memberId} {
       allow read: if signedIn();
       allow create: if signedIn()
-        && (request.resource.data.authUid == null || request.resource.data.authUid == request.auth.uid);
+        && (isUnset(request.resource.data, 'authUid') || fieldIs(request.resource.data, 'authUid', request.auth.uid));
       allow update: if signedIn() && (
-        // claiming an existing, still-unclaimed member — only the authUid field, only once
-        (request.resource.data.authUid == request.auth.uid && isUnset(resource.data, 'authUid')
+        // claiming a still-unclaimed member: only authUid, only once
+        (fieldIs(request.resource.data, 'authUid', request.auth.uid) && isUnset(resource.data, 'authUid')
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authUid']))
         ||
-        // the member themself, or the trip owner, editing name/active
-        (resource.data.authUid == request.auth.uid
-          || isOwnerOf(/databases/$(database)/documents/settings/trip))
+        // the member themself edits name/active, never their own link
+        (fieldIs(resource.data, 'authUid', request.auth.uid)
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['authUid', 'createdAt']))
+        ||
+        isOwnerOf(/databases/$(database)/documents/settings/trip)
       );
-      allow delete: if false; // soft-delete only (active:false) — never a hard delete
+      allow delete: if false; // soft-delete only (active:false)
     }
 
     match /expenses/{expenseId} {
       allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.amount is number && request.resource.data.amount > 0
-        && (request.resource.data.type != 'settlement'
-            || request.resource.data.payerId == linkedMemberId(/databases/$(database)/documents/memberLinks/$(request.auth.uid)));
+      allow create: if signedIn() && request.resource.data.amount is number && request.resource.data.amount > 0 && (
+        // a settlement can only be raised by the payer, and never pre-confirmed
+        (request.resource.data.type == 'settlement'
+          && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), request.resource.data.payerId)
+          && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), request.resource.data.addedBy)
+          && isUnset(request.resource.data, 'confirmedBy'))
+        ||
+        // a normal expense: trip open, authored by you (or by a repeating template you can vouch for)
+        (request.resource.data.type != 'settlement'
+          && isTripOpen(/databases/$(database)/documents/settings/trip)
+          && (isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), request.resource.data.addedBy)
+              || ('recurringId' in request.resource.data && request.resource.data.recurringId is string
+                  && exists(/databases/$(database)/documents/recurring/$(request.resource.data.recurringId))
+                  && get(/databases/$(database)/documents/recurring/$(request.resource.data.recurringId)).data.createdBy == request.resource.data.addedBy)))
+      );
       allow update: if signedIn() && (
-        // the creditor confirming or disputing a pending settlement — only those fields, only once
+        // the creditor confirming or disputing a pending settlement, once
         (resource.data.type == 'settlement'
-          && resource.data.participantIds[0] == linkedMemberId(/databases/$(database)/documents/memberLinks/$(request.auth.uid))
+          && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), resource.data.participantIds[0])
           && isUnset(resource.data, 'confirmedBy')
           && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['confirmedBy','confirmedAt','disputed','disputedBy','disputedAt']))
+               .hasOnly(['confirmedBy', 'confirmedAt', 'disputed', 'disputedBy', 'disputedAt']))
         ||
-        // whoever added it, or the trip owner, editing/soft-deleting/restoring it
-        (resource.data.addedBy == linkedMemberId(/databases/$(database)/documents/memberLinks/$(request.auth.uid))
-          || isOwnerOf(/databases/$(database)/documents/settings/trip))
+        // the author edits / soft-deletes a normal expense, never authorship or settlement fields
+        (resource.data.type != 'settlement'
+          && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), resource.data.addedBy)
+          && !request.resource.data.diff(resource.data).affectedKeys()
+               .hasAny(['addedBy', 'type', 'createdAt', 'confirmedBy', 'confirmedAt', 'disputed', 'disputedBy', 'disputedAt']))
+        ||
+        // the payer may withdraw their own still-pending settlement (soft delete/restore only)
+        (resource.data.type == 'settlement'
+          && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), resource.data.addedBy)
+          && isUnset(resource.data, 'confirmedBy')
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['deleted', 'deletedBy', 'deletedAt']))
+        ||
+        isOwnerOf(/databases/$(database)/documents/settings/trip)
       );
+      allow delete: if false;
+    }
+
+    match /recurring/{recId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.amount is number && request.resource.data.amount > 0
+        && request.resource.data.interval in ['weekly', 'monthly']
+        && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), request.resource.data.createdBy)
+        && isTripOpen(/databases/$(database)/documents/settings/trip);
+      // pause / resume only, by whoever set it up or the owner
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active'])
+        && (isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), resource.data.createdBy)
+            || isOwnerOf(/databases/$(database)/documents/settings/trip));
       allow delete: if false;
     }
 
@@ -94,10 +145,16 @@ service cloud.firestore {
         // one-time ownership claim on the pre-existing default trip
         (isUnset(resource.data, 'ownerUid')
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ownerUid']))
-        || resource.data.ownerUid == request.auth.uid
-        // the one-time seed-members race flag, settable by anyone signed in
+        || fieldIs(resource.data, 'ownerUid', request.auth.uid)
+        // the one-time seed-members race flag
         || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seeded'])
       );
+    }
+
+    // ================= per-user data =================
+
+    match /users/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
     }
 
     // ================= created trips (nested paths) =================
@@ -108,46 +165,83 @@ service cloud.firestore {
       allow update: if signedIn() && (
         (isUnset(resource.data, 'ownerUid')
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ownerUid']))
-        || resource.data.ownerUid == request.auth.uid
+        || fieldIs(resource.data, 'ownerUid', request.auth.uid)
         || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seeded'])
       );
 
       match /memberLinks/{uid} {
         allow read: if signedIn();
         allow create: if signedIn() && request.auth.uid == uid
-          && !exists(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(uid));
+          && !exists(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(uid))
+          && request.resource.data.memberId is string
+          && getAfter(/databases/$(database)/documents/trips/$(tripId)/members/$(request.resource.data.memberId)).data.authUid == request.auth.uid;
         allow update, delete: if false;
       }
 
       match /members/{memberId} {
         allow read: if signedIn();
         allow create: if signedIn()
-          && (request.resource.data.authUid == null || request.resource.data.authUid == request.auth.uid);
+          && (isUnset(request.resource.data, 'authUid') || fieldIs(request.resource.data, 'authUid', request.auth.uid));
         allow update: if signedIn() && (
-          (request.resource.data.authUid == request.auth.uid && isUnset(resource.data, 'authUid')
+          (fieldIs(request.resource.data, 'authUid', request.auth.uid) && isUnset(resource.data, 'authUid')
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authUid']))
           ||
-          (resource.data.authUid == request.auth.uid
-            || isOwnerOf(/databases/$(database)/documents/trips/$(tripId)))
+          (fieldIs(resource.data, 'authUid', request.auth.uid)
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['authUid', 'createdAt']))
+          ||
+          isOwnerOf(/databases/$(database)/documents/trips/$(tripId))
         );
         allow delete: if false;
       }
 
       match /expenses/{expenseId} {
         allow read: if signedIn();
-        allow create: if signedIn() && request.resource.data.amount is number && request.resource.data.amount > 0
-          && (request.resource.data.type != 'settlement'
-              || request.resource.data.payerId == linkedMemberId(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid)));
+        allow create: if signedIn() && request.resource.data.amount is number && request.resource.data.amount > 0 && (
+          (request.resource.data.type == 'settlement'
+            && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), request.resource.data.payerId)
+            && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), request.resource.data.addedBy)
+            && isUnset(request.resource.data, 'confirmedBy'))
+          ||
+          (request.resource.data.type != 'settlement'
+            && isTripOpen(/databases/$(database)/documents/trips/$(tripId))
+            && (isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), request.resource.data.addedBy)
+                || ('recurringId' in request.resource.data && request.resource.data.recurringId is string
+                    && exists(/databases/$(database)/documents/trips/$(tripId)/recurring/$(request.resource.data.recurringId))
+                    && get(/databases/$(database)/documents/trips/$(tripId)/recurring/$(request.resource.data.recurringId)).data.createdBy == request.resource.data.addedBy)))
+        );
         allow update: if signedIn() && (
           (resource.data.type == 'settlement'
-            && resource.data.participantIds[0] == linkedMemberId(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid))
+            && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), resource.data.participantIds[0])
             && isUnset(resource.data, 'confirmedBy')
             && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['confirmedBy','confirmedAt','disputed','disputedBy','disputedAt']))
+                 .hasOnly(['confirmedBy', 'confirmedAt', 'disputed', 'disputedBy', 'disputedAt']))
           ||
-          (resource.data.addedBy == linkedMemberId(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid))
-            || isOwnerOf(/databases/$(database)/documents/trips/$(tripId)))
+          (resource.data.type != 'settlement'
+            && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), resource.data.addedBy)
+            && !request.resource.data.diff(resource.data).affectedKeys()
+                 .hasAny(['addedBy', 'type', 'createdAt', 'confirmedBy', 'confirmedAt', 'disputed', 'disputedBy', 'disputedAt']))
+          ||
+          (resource.data.type == 'settlement'
+            && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), resource.data.addedBy)
+            && isUnset(resource.data, 'confirmedBy')
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['deleted', 'deletedBy', 'deletedAt']))
+          ||
+          isOwnerOf(/databases/$(database)/documents/trips/$(tripId))
         );
+        allow delete: if false;
+      }
+
+      match /recurring/{recId} {
+        allow read: if signedIn();
+        allow create: if signedIn() && request.resource.data.amount is number && request.resource.data.amount > 0
+          && request.resource.data.interval in ['weekly', 'monthly']
+          && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), request.resource.data.createdBy)
+          && isTripOpen(/databases/$(database)/documents/trips/$(tripId));
+        allow update: if signedIn()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active'])
+          && (isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), resource.data.createdBy)
+              || isOwnerOf(/databases/$(database)/documents/trips/$(tripId)));
         allow delete: if false;
       }
     }

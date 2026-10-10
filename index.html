@@ -341,6 +341,23 @@
   .status-tag.confirmed{background:var(--positive-bg); color:var(--positive);}
   .status-tag.disputed{background:var(--negative-bg); color:var(--negative);}
 
+  /* ---- categories, repeating, trips ---- */
+  .cat-row{padding:10px 14px; display:flex; flex-direction:column; gap:6px;}
+  .cat-top{display:flex; justify-content:space-between; font-size:13px; font-weight:600;}
+  .cat-top .amt{font-family:var(--font-mono);}
+  .cat-bar{height:6px; border-radius:999px; background:var(--surface-alt); overflow:hidden;}
+  .cat-bar i{display:block; height:100%; background:var(--accent); border-radius:999px;}
+  .cat-tag{display:inline-block; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; background:var(--surface-alt); color:var(--ink-muted); padding:2px 6px; border-radius:5px; margin-right:6px;}
+  .recur-row{display:flex; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid var(--border);}
+  .recur-row:last-child{border-bottom:none;}
+  .recur-main{flex:1; min-width:0; font-size:13px;}
+  .recur-main b{font-weight:600;}
+  .recur-meta{font-size:12px; color:var(--ink-muted); margin-top:2px;}
+  .trip-row{display:flex; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid var(--border); cursor:pointer; text-decoration:none; color:var(--ink);}
+  .trip-row:last-child{border-bottom:none;}
+  .trip-row .name{flex:1; font-weight:600; font-size:14px;}
+  .trip-row .meta{font-size:12px; color:var(--ink-muted);}
+
   /* ---- balance sheet drill-in ---- */
   .hero.tappable{cursor:pointer;}
   .balsheet-group{padding:4px 0;}
@@ -378,7 +395,7 @@
 </div>
 
 <div class="topbar" id="topbar">
-  <div>
+  <div id="tripSwitcher" style="cursor:pointer;" role="button" tabindex="0" aria-label="Switch trip">
     <div class="trip-name" id="tripNameDisplay">Trip Split</div>
     <div class="trip-sub" id="tripSubDisplay">loading…</div>
   </div>
@@ -413,6 +430,9 @@
 
     <div class="section-label">Everyone's balance</div>
     <div class="card" id="balancesCard"></div>
+
+    <div class="section-label" id="catLabel" style="display:none;">Spending by category</div>
+    <div class="card" id="categoryCard" style="display:none; padding:6px 0;"></div>
   </section>
 
   <!-- ADD -->
@@ -431,6 +451,10 @@
         </div>
       </div>
       <div class="field">
+        <label for="f-category">Category</label>
+        <select class="input" id="f-category"></select>
+      </div>
+      <div class="field">
         <label for="f-payer">Paid by</label>
         <select class="input" id="f-payer"></select>
       </div>
@@ -442,6 +466,15 @@
           <button type="button" id="splitNone">Select none</button>
         </div>
       </div>
+      <div class="field" id="repeatField">
+        <label for="f-repeat">Repeat</label>
+        <select class="input" id="f-repeat">
+          <option value="">Doesn't repeat</option>
+          <option value="weekly">Every week</option>
+          <option value="monthly">Every month</option>
+        </select>
+        <div style="font-size:12px; color:var(--ink-muted); margin-top:6px;">A repeating expense is added automatically each time it falls due, the next time anyone opens the app.</div>
+      </div>
       <button class="btn-primary" type="submit">Add expense</button>
       <button type="button" class="btn-secondary" id="editCancelBtn" style="width:100%; margin-top:8px; display:none;">Cancel edit</button>
     </form>
@@ -450,7 +483,12 @@
   <!-- LEDGER -->
   <section class="view" id="view-ledger">
     <h2 style="font-size:20px;margin-bottom:16px;">Ledger</h2>
-    <input class="input" id="ledgerSearch" type="search" placeholder="Search by item, person or amount…" aria-label="Search the ledger" style="margin-bottom:12px;" />
+    <input class="input" id="ledgerSearch" type="search" placeholder="Search by item, person, category or amount…" aria-label="Search the ledger" style="margin-bottom:10px;" />
+    <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+      <select class="input" id="ledgerCategory" aria-label="Filter by category" style="flex:1 1 140px;"></select>
+      <input class="input" id="ledgerFrom" type="date" aria-label="From date" style="flex:1 1 130px;" />
+      <input class="input" id="ledgerTo" type="date" aria-label="To date" style="flex:1 1 130px;" />
+    </div>
     <div class="card" id="ledgerCard"></div>
     <button type="button" id="ledgerDeletedToggle" class="deleted-toggle" style="display:none;"></button>
     <div class="card" id="ledgerDeletedList" style="display:none; margin-top:8px;"></div>
@@ -487,6 +525,15 @@
         <input class="input" id="p-newname" type="text" placeholder="Add a person…" maxlength="30" />
         <button id="p-addbtn" type="button">Add</button>
       </div>
+    </div>
+
+    <div class="section-label" id="recurLabel" style="display:none;">Repeating expenses</div>
+    <div class="card" id="recurCard" style="display:none;"></div>
+
+    <div class="section-label">Alerts on this device</div>
+    <div class="card" style="padding:14px;">
+      <div style="font-size:12px; color:var(--ink-muted); margin-bottom:10px;" id="alertsNote">Get a notification when someone adds an expense or marks a payment while Trip Split is open. This is not background push: nothing arrives if the app is closed.</div>
+      <button type="button" class="btn-secondary" id="p-alerts" style="width:100%;"></button>
     </div>
 
     <div class="section-label">Share this trip</div>
@@ -585,9 +632,20 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="tripsBackdrop">
+  <div class="modal-sheet">
+    <h2>Your trips</h2>
+    <div class="sub">Every trip you've opened while signed in on this account. Tap one to switch.</div>
+    <div class="card" id="tripsList"></div>
+    <button type="button" class="btn-secondary" id="tripsClose" style="width:100%; margin-top:14px;">Close</button>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script type="module">
+import * as L from "./logic.js";
+
 /* =========================================================================
    FIREBASE CONFIG — paste your project's web config here.
    Firebase Console → Project settings → General → Your apps → Web app → SDK setup
@@ -618,6 +676,7 @@ const EXPENSES_PATH = TRIP_ID ? `trips/${TRIP_ID}/expenses` : "expenses";
 // reverse index so Security Rules can resolve "which member is this signed-in
 // user" by a direct doc lookup (rules can't run a "find where authUid==uid" query)
 const MEMBERLINKS_PATH = TRIP_ID ? `trips/${TRIP_ID}/memberLinks` : "memberLinks";
+const RECURRING_PATH = TRIP_ID ? `trips/${TRIP_ID}/recurring` : "recurring";
 
 /* ---------- setup guard ---------- */
 const needsSetup = !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey === "YOUR_API_KEY";
@@ -633,6 +692,8 @@ let uid = null;
 let members = [];      // {id, name, active}
 let expenses = [];      // {id, type, description, amount, payerId, participantIds, createdAt, addedBy}
 let tripSettings = { name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY, ownerUid: null, closed: false };
+let recurring = [];     // {id, description, amount, payerId, participantIds, category, interval, startDate, active, createdBy}
+let myTrips = {};       // from users/<uid>.trips
 let tripNotFound = false;
 let editingExpenseId = null;
 let showDeleted = false;
@@ -644,6 +705,9 @@ function expensesCol(){ return collection(db, EXPENSES_PATH); }
 function memberDoc(id){ return doc(db, MEMBERS_PATH, id); }
 function expenseDoc(id){ return doc(db, EXPENSES_PATH, id); }
 function memberLinkDoc(forUid){ return doc(db, MEMBERLINKS_PATH, forUid); }
+function recurringCol(){ return collection(db, RECURRING_PATH); }
+function recurringDoc(id){ return doc(db, RECURRING_PATH, id); }
+function userDoc(forUid){ return doc(db, "users", forUid); }
 function tripSettingsRef(){ return TRIP_ID ? doc(db, "trips", TRIP_ID) : doc(db, "settings", "trip"); }
 
 const AVATAR_COLORS = ["#146F66","#B5453A","#8E6F14","#3A5FB5","#7A4CB5","#B5148A","#4C8E14","#14868E"];
@@ -804,86 +868,25 @@ function escapeHtml(s){
 }
 
 /* ---------- balances + settle-up ---------- */
-function computeBalances(){
-  const net = {};
-  members.forEach(m=>net[m.id]=0);
-  expenses.filter(e=>!e.deleted && (e.type!=="settlement" || e.confirmedBy)).forEach(e=>{
-    if (!(e.payerId in net)) net[e.payerId] = 0;
-    net[e.payerId] += e.amount;
-    const ids = e.participantIds || [];
-    if (ids.length){
-      const share = e.amount / ids.length;
-      ids.forEach(pid=>{
-        if (!(pid in net)) net[pid] = 0;
-        net[pid] -= share;
-      });
-    }
-  });
-  return net;
-}
-function pendingSettlementBetween(fromId, toId){
-  return expenses.find(e=>!e.deleted && e.type==="settlement" && !e.confirmedBy && !e.disputed
-    && e.payerId===fromId && (e.participantIds||[])[0]===toId);
-}
-function myPendingConfirmations(){
-  return expenses.filter(e=>!e.deleted && e.type==="settlement" && !e.confirmedBy && !e.disputed
-    && (e.participantIds||[])[0]===meId);
-}
-function computePairwiseBalances(forId){
-  const pair = {}; // { otherMemberId: { net, items:[{desc,amount,date}] } }
-  function bump(otherId, delta, item){
-    if (!otherId || otherId===forId) return;
-    if (!pair[otherId]) pair[otherId] = {net:0, items:[]};
-    pair[otherId].net += delta;
-    pair[otherId].items.push(item);
-  }
-  expenses.filter(e=>!e.deleted).forEach(e=>{
-    if (e.type==="settlement"){
-      if (!e.confirmedBy) return; // only agreed-on settlements move the balance
-      const debtor = e.payerId, creditor = (e.participantIds||[])[0];
-      if (forId===creditor) bump(debtor, -e.amount, {desc:"Settlement received", amount:-e.amount, date:e.confirmedAt||e.createdAt});
-      else if (forId===debtor) bump(creditor, +e.amount, {desc:"Settlement paid", amount:+e.amount, date:e.confirmedAt||e.createdAt});
-    } else {
-      const ids = e.participantIds||[];
-      if (!ids.length) return;
-      const share = e.amount/ids.length;
-      if (forId===e.payerId){
-        ids.forEach(pid=>{ if (pid!==forId) bump(pid, +share, {desc:e.description, amount:share, date:e.createdAt}); });
-      } else if (ids.includes(forId)){
-        bump(e.payerId, -share, {desc:e.description, amount:-share, date:e.createdAt});
-      }
-    }
-  });
-  return pair;
-}
-function computeSettlements(net){
-  const creditors = [], debtors = [];
-  Object.entries(net).forEach(([id, amt])=>{
-    if (amt > 0.01) creditors.push({id, amount: amt});
-    else if (amt < -0.01) debtors.push({id, amount: -amt});
-  });
-  creditors.sort((a,b)=>b.amount-a.amount);
-  debtors.sort((a,b)=>b.amount-a.amount);
-  const out = [];
-  let i=0, j=0;
-  while (i<debtors.length && j<creditors.length){
-    const pay = Math.min(debtors[i].amount, creditors[j].amount);
-    out.push({from: debtors[i].id, to: creditors[j].id, amount: pay});
-    debtors[i].amount -= pay;
-    creditors[j].amount -= pay;
-    if (debtors[i].amount < 0.01) i++;
-    if (creditors[j].amount < 0.01) j++;
-  }
-  return out;
-}
+// The maths lives in logic.js (unit-tested); these bind it to the live data.
+const computeBalances = () => L.computeBalances(members, expenses);
+const pendingSettlementBetween = (fromId, toId) => L.pendingSettlementBetween(expenses, fromId, toId);
+const myPendingConfirmations = () => L.myPendingConfirmations(expenses, meId);
+const computePairwiseBalances = forId => L.computePairwiseBalances(expenses, forId);
+const computeSettlements = net => L.computeSettlements(net);
 
 /* ---------- rendering ---------- */
 function renderAll(){
   renderTopbar();
   renderHome();
+  renderCategories();
   renderAddForm();
   renderLedger();
   renderPeople();
+  renderRecurring();
+  renderAlertsButton();
+  registerTripForUser();
+  generateRecurring();
 }
 
 function renderTopbar(){
@@ -1083,6 +1086,13 @@ function renderAddForm(){
 
   document.getElementById("amountPrefix").textContent = currencySymbolGuess(tripSettings.currency);
 
+  const catSel = document.getElementById("f-category");
+  if (!catSel.options.length){
+    catSel.innerHTML = `<option value="">${L.UNCATEGORISED}</option>` + L.CATEGORIES.map(c=>`<option value="${c}">${c}</option>`).join("");
+  }
+  if (editingExpense && isNewEditSession) catSel.value = editingExpense.category || "";
+  document.getElementById("repeatField").style.display = editingExpense ? "none" : "block";
+
   document.getElementById("addHeading").textContent = editingExpense ? "Edit expense" : "Add an expense";
   document.querySelector('#addForm button[type=submit]').textContent = editingExpense ? "Save changes" : "Add expense";
   document.getElementById("editCancelBtn").style.display = editingExpense ? "block" : "none";
@@ -1129,20 +1139,37 @@ document.getElementById("addForm").addEventListener("submit", async (e)=>{
   if (tripSettings.closed){ toast("This trip is closed. The owner can reopen it in People."); return; }
   if (!desc || !amount || amount<=0 || !payerId){ toast("Fill in all fields"); return; }
   if (!participantIds.length){ toast("Pick at least one person to split with"); return; }
+  const category = document.getElementById("f-category").value;
+  const repeat = document.getElementById("f-repeat").value;
   const submitBtn = e.target.querySelector("button[type=submit]");
   const wasEditing = editingExpenseId;
   submitBtn.disabled = true; submitBtn.textContent = wasEditing ? "Saving…" : "Adding…";
   try{
     if (wasEditing){
       await updateDoc(expenseDoc(wasEditing), {
-        description: desc, amount, payerId, participantIds,
+        description: desc, amount, payerId, participantIds, category,
         editedAt: Date.now(), editedBy: meId || payerId
       });
       editingExpenseId = null;
       document.getElementById("f-desc").value = "";
       document.getElementById("f-amount").value = "";
+      document.getElementById("f-category").value = "";
       saveToast("Expense updated");
       document.querySelector('.tab-btn[data-view="ledger"]').click();
+    } else if (repeat){
+      // the first occurrence is created by the generator as soon as this
+      // template syncs, so there is no separate one-off expense here
+      await addDoc(recurringCol(), {
+        description: desc, amount, payerId, participantIds, category,
+        interval: repeat, startDate: Date.now(), active: true,
+        createdBy: meId || payerId, createdAt: Date.now()
+      });
+      document.getElementById("f-desc").value = "";
+      document.getElementById("f-amount").value = "";
+      document.getElementById("f-category").value = "";
+      document.getElementById("f-repeat").value = "";
+      saveToast("Repeating expense saved");
+      document.querySelector('.tab-btn[data-view="home"]').click();
     } else {
       await addDoc(expensesCol(), {
         type: "expense",
@@ -1150,16 +1177,18 @@ document.getElementById("addForm").addEventListener("submit", async (e)=>{
         amount,
         payerId,
         participantIds,
+        category,
         createdAt: Date.now(),
         addedBy: meId || payerId
       });
       document.getElementById("f-desc").value = "";
       document.getElementById("f-amount").value = "";
+      document.getElementById("f-category").value = "";
       saveToast("Expense added");
       document.querySelector('.tab-btn[data-view="home"]').click();
     }
   }catch(err){
-    toast("Couldn't save — check your connection");
+    errorToast(err, "Couldn't save — check your connection");
   }finally{
     submitBtn.disabled = false; submitBtn.textContent = editingExpenseId ? "Save changes" : "Add expense";
   }
@@ -1191,7 +1220,7 @@ function ledgerItemHtml(e, isDeleted){
     <span class="avatar" style="background:${colorFor(e.payerId)}">${initials(nameOf(e.payerId))}</span>
     <div class="ledger-main">
       <div class="ledger-top">
-        <div class="ledger-desc">${settleStatus}${escapeHtml(e.description)}</div>
+        <div class="ledger-desc">${settleStatus}${(!isSettlement && e.category) ? `<span class="cat-tag">${escapeHtml(e.category)}</span>` : ""}${e.recurringId ? `<span class="cat-tag">repeats</span>` : ""}${escapeHtml(e.description)}</div>
         <div class="ledger-amt">${fmtMoney(e.amount)}</div>
       </div>
       <div class="ledger-meta">${isSettlement
@@ -1209,18 +1238,28 @@ function renderLedger(){
   const toggle = document.getElementById("ledgerDeletedToggle");
   const deletedWrap = document.getElementById("ledgerDeletedList");
 
-  const q = (document.getElementById("ledgerSearch").value || "").trim().toLowerCase();
-  const matches = e => !q || [
-    e.description, nameOf(e.payerId), (e.participantIds||[]).map(nameOf).join(" "),
-    String(e.amount), fmtMoney(e.amount)
-  ].some(s => String(s||"").toLowerCase().includes(q));
+  const catFilter = document.getElementById("ledgerCategory");
+  if (!catFilter.options.length){
+    catFilter.innerHTML = `<option value="">All categories</option><option value="${L.UNCATEGORISED}">${L.UNCATEGORISED}</option>` + L.CATEGORIES.map(c=>`<option value="${c}">${c}</option>`).join("");
+  }
+  const fromVal = document.getElementById("ledgerFrom").value;
+  const toVal = document.getElementById("ledgerTo").value;
+  const q = (document.getElementById("ledgerSearch").value || "").trim();
+  const filter = {
+    q,
+    category: catFilter.value,
+    fromMs: fromVal ? new Date(fromVal + "T00:00:00").getTime() : 0,
+    toMs: toVal ? new Date(toVal + "T23:59:59.999").getTime() : 0,
+  };
+  const filtering = !!(q || filter.category || filter.fromMs || filter.toMs);
+  const matches = e => L.matchesLedgerFilter(e, filter, {nameOf, fmtMoney});
 
   const active = expenses.filter(e=>!e.deleted && matches(e)).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
   const deleted = expenses.filter(e=>e.deleted && matches(e)).sort((a,b)=>(b.deletedAt||0)-(a.deletedAt||0));
 
   card.innerHTML = active.length
     ? active.map(e=>ledgerItemHtml(e,false)).join("")
-    : `<div class="empty-note">${q ? "Nothing matches that search." : deleted.length ? "No active expenses — see deleted below." : "No expenses yet. Add the first one!"}</div>`;
+    : `<div class="empty-note">${filtering ? "Nothing matches those filters." : deleted.length ? "No active expenses — see deleted below." : "No expenses yet. Add the first one!"}</div>`;
 
   card.querySelectorAll(".ledger-edit").forEach(btn=>{
     btn.addEventListener("click", ()=> enterEditMode(btn.dataset.id));
@@ -1254,7 +1293,10 @@ function renderLedger(){
     });
   });
 }
-document.getElementById("ledgerSearch").addEventListener("input", renderLedger);
+["ledgerSearch","ledgerCategory","ledgerFrom","ledgerTo"].forEach(id=>{
+  document.getElementById(id).addEventListener("input", renderLedger);
+  document.getElementById(id).addEventListener("change", renderLedger);
+});
 document.addEventListener("click", (e)=>{
   if (e.target && e.target.id === "ledgerDeletedToggle"){
     showDeleted = !showDeleted;
@@ -1385,13 +1427,14 @@ function buildTextSummary(){
 }
 
 function buildCsv(){
-  const rows = [["Date","Type","Description","Amount","PaidBy","SplitWith","AddedBy","Deleted","DeletedBy","DeletedAt"]];
+  const rows = [["Date","Type","Description","Category","Amount","PaidBy","SplitWith","AddedBy","Deleted","DeletedBy","DeletedAt"]];
   const csvField = v => `"${String(v==null?"":v).replace(/"/g,'""')}"`;
   [...expenses].sort((a,b)=>(a.createdAt||0)-(b.createdAt||0)).forEach(e=>{
     rows.push([
       e.createdAt ? new Date(e.createdAt).toISOString() : "",
       e.type || "expense",
       e.description || "",
+      e.category || "",
       e.amount,
       nameOf(e.payerId),
       (e.participantIds||[]).map(nameOf).join("; "),
@@ -1466,6 +1509,148 @@ document.getElementById("nt-create").addEventListener("click", async ()=>{
   }
 });
 
+/* ---------- spending by category ---------- */
+function renderCategories(){
+  const totals = L.categoryTotals(expenses);
+  const label = document.getElementById("catLabel"), card = document.getElementById("categoryCard");
+  if (!totals.length){ label.style.display = "none"; card.style.display = "none"; return; }
+  label.style.display = "block"; card.style.display = "block";
+  const max = Math.max(...totals.map(t=>t.total));
+  card.innerHTML = totals.map(t=>`
+    <div class="cat-row">
+      <div class="cat-top"><span>${escapeHtml(t.category)} <span style="color:var(--ink-muted); font-weight:500;">· ${t.count}</span></span><span class="amt">${fmtMoney(t.total)}</span></div>
+      <div class="cat-bar"><i style="width:${Math.max(3, Math.round(t.total/max*100))}%"></i></div>
+    </div>`).join("");
+}
+
+/* ---------- repeating expenses ---------- */
+function isTripOwner(){ return !!tripSettings.ownerUid && uid === tripSettings.ownerUid; }
+
+function renderRecurring(){
+  const label = document.getElementById("recurLabel"), card = document.getElementById("recurCard");
+  if (!recurring.length){ label.style.display = "none"; card.style.display = "none"; return; }
+  label.style.display = "block"; card.style.display = "block";
+  const fmtDate = ms => new Date(ms).toLocaleDateString(undefined,{day:"numeric", month:"short", year:"numeric"});
+  card.innerHTML = recurring.map(r=>{
+    const next = r.active ? L.nextOccurrenceMs(r, Date.now()) : null;
+    const canEdit = r.createdBy === meId || isTripOwner();
+    return `<div class="recur-row">
+      <div class="recur-main">
+        <b>${escapeHtml(r.description)}</b> · <span class="mono">${fmtMoney(r.amount)}</span> ${r.interval === "weekly" ? "every week" : "every month"}
+        <div class="recur-meta">Paid by ${escapeHtml(nameOf(r.payerId))} · ${r.active ? (next ? "next " + fmtDate(next) : "active") : "paused"}</div>
+      </div>
+      ${canEdit ? `<button class="btn-secondary recur-toggle" data-id="${r.id}" data-active="${r.active ? "1" : "0"}">${r.active ? "Pause" : "Resume"}</button>` : ""}
+    </div>`;
+  }).join("");
+  card.querySelectorAll(".recur-toggle").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      try{
+        await updateDoc(recurringDoc(btn.dataset.id), {active: btn.dataset.active !== "1"});
+        saveToast(btn.dataset.active === "1" ? "Paused" : "Resumed");
+      }catch(e){ errorToast(e, "Couldn't save — check your connection"); }
+    });
+  });
+}
+
+let generating = false;
+// Each occurrence has a deterministic id (rec_<template>_<date>), created inside
+// a transaction only if absent, so two phones opening the app at once can't
+// double-add it and a deleted occurrence is never resurrected.
+async function generateRecurring(){
+  if (generating || !meId || !db || tripSettings.closed || !navigator.onLine) return;
+  const have = new Set(expenses.map(e=>e.id));
+  const todo = [];
+  recurring.filter(r=>r.active).forEach(r=>{
+    L.recurrenceOccurrences(r, Date.now()).forEach(o=>{
+      if (!have.has(o.expenseId)) todo.push({r, o});
+    });
+  });
+  if (!todo.length) return;
+  generating = true;
+  try{
+    for (const {r, o} of todo.slice(0, 30)){
+      try{
+        await runTransaction(db, async tx=>{
+          const ref = expenseDoc(o.expenseId);
+          const s = await tx.get(ref);
+          if (s.exists()) return;
+          tx.set(ref, {
+            type: "expense", description: r.description, amount: r.amount,
+            payerId: r.payerId, participantIds: r.participantIds, category: r.category || "",
+            createdAt: o.dueMs, addedBy: r.createdBy, recurringId: r.id
+          });
+        });
+      }catch(e){ /* not allowed or offline: try again next render */ }
+    }
+  } finally { generating = false; }
+}
+
+/* ---------- alerts while the app is open ---------- */
+const ALERTS_KEY = "tripSplitAlerts";
+const appLoadedAt = Date.now();
+function alertsOn(){
+  try{ return localStorage.getItem(ALERTS_KEY) === "1" && typeof Notification !== "undefined" && Notification.permission === "granted"; }
+  catch(e){ return false; }
+}
+function renderAlertsButton(){
+  const btn = document.getElementById("p-alerts");
+  if (typeof Notification === "undefined"){
+    btn.textContent = "Not supported in this browser"; btn.disabled = true; return;
+  }
+  btn.textContent = alertsOn() ? "Turn alerts off" : "Turn alerts on";
+}
+document.getElementById("p-alerts").addEventListener("click", async ()=>{
+  if (alertsOn()){
+    try{ localStorage.setItem(ALERTS_KEY, "0"); }catch(e){}
+    renderAlertsButton(); toast("Alerts off"); return;
+  }
+  const perm = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+  if (perm === "granted"){
+    try{ localStorage.setItem(ALERTS_KEY, "1"); }catch(e){}
+    toast("Alerts on for this device");
+  } else toast("Notifications are blocked in your browser settings");
+  renderAlertsButton();
+});
+function notifyActivity(e){
+  if (!alertsOn() || !meId || e.addedBy === meId) return;
+  if ((e.createdAt || 0) <= appLoadedAt) return;
+  const body = e.type === "settlement"
+    ? `${nameOf(e.payerId)} says they paid ${nameOf((e.participantIds||[])[0])} ${fmtMoney(e.amount)}`
+    : `${nameOf(e.payerId)} added ${e.description} (${fmtMoney(e.amount)})`;
+  try{ new Notification(tripSettings.name || "Trip Split", {body}); }catch(err){}
+}
+
+/* ---------- my trips (switcher) ---------- */
+let registeredKey = null;
+async function registerTripForUser(){
+  if (!db || !uid || !meId) return;
+  const key = TRIP_ID || "default";
+  const sig = key + "|" + (tripSettings.name || "");
+  if (registeredKey === sig) return;
+  registeredKey = sig;
+  try{
+    await setDoc(userDoc(uid), {trips: {[key]: {id: TRIP_ID || null, name: tripSettings.name || DEFAULT_TRIP_NAME, lastSeen: Date.now()}}}, {merge:true});
+  }catch(e){ registeredKey = null; /* rules for users/ may not be published yet */ }
+}
+const tripsBackdrop = document.getElementById("tripsBackdrop");
+function openTrips(){
+  const entries = Object.entries(myTrips).map(([k, v])=>({key:k, ...v})).sort((a,b)=>(b.lastSeen||0)-(a.lastSeen||0));
+  const list = document.getElementById("tripsList");
+  const here = TRIP_ID || "default";
+  list.innerHTML = entries.length ? entries.map(t=>{
+    const href = t.id ? `?trip=${encodeURIComponent(t.id)}` : location.pathname;
+    return `<a class="trip-row" href="${href}">
+      <span class="name">${escapeHtml(t.name || "Trip")}</span>
+      <span class="meta">${t.key === here ? "open now" : ""}</span>
+    </a>`;
+  }).join("") : `<div class="empty-note">Trips you open while signed in will show up here.</div>`;
+  tripsBackdrop.classList.add("open");
+}
+document.getElementById("tripSwitcher").addEventListener("click", openTrips);
+document.getElementById("tripSwitcher").addEventListener("keydown", e=>{ if (e.key==="Enter" || e.key===" "){ e.preventDefault(); openTrips(); }});
+document.getElementById("tripsClose").addEventListener("click", ()=>tripsBackdrop.classList.remove("open"));
+tripsBackdrop.addEventListener("click", e=>{ if (e.target===tripsBackdrop) tripsBackdrop.classList.remove("open"); });
+
 /* ---------- boot ---------- */
 if (!needsSetup){
   boot();
@@ -1484,7 +1669,7 @@ async function boot(){
 
   window.collection = _collection; window.doc = _doc; window.addDoc = _addDoc;
   window.updateDoc = _updateDoc; window.setDoc = _setDoc; window.deleteDoc = _deleteDoc;
-  window.writeBatch = writeBatch; window.signOut = signOut;
+  window.writeBatch = writeBatch; window.signOut = signOut; window.runTransaction = runTransaction;
 
   app = initializeApp(FIREBASE_CONFIG);
   auth = getAuth(app);
@@ -1584,12 +1769,27 @@ async function boot(){
       toast("Sync error: " + err.code);
     });
 
+    let firstExpensesSnap = true;
     _onSnapshot(expensesCol(), (snap)=>{
       expenses = snap.docs.map(d=>({id:d.id, ...d.data()}));
+      if (!firstExpensesSnap && !snap.metadata.hasPendingWrites){
+        snap.docChanges().forEach(ch=>{ if (ch.type === "added") notifyActivity(ch.doc.data()); });
+      }
+      firstExpensesSnap = false;
       renderAll();
     }, (err)=>{
       toast("Sync error: " + err.code);
     });
+
+    // repeating templates and the "my trips" list: quiet on error, since the
+    // rules for these collections may not be published yet
+    _onSnapshot(recurringCol(), (snap)=>{
+      recurring = snap.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+      renderAll();
+    }, ()=>{ recurring = []; });
+    _onSnapshot(userDoc(uid), (snap)=>{
+      myTrips = (snap.exists() && snap.data().trips) || {};
+    }, ()=>{ myTrips = {}; });
 
     _onSnapshot(tripSettingsRef(), async (snap)=>{
       if (snap.exists()){

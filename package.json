@@ -1,0 +1,16 @@
+{
+  "name": "trip-split",
+  "private": true,
+  "type": "module",
+  "description": "Trip Split: shared expense tracker. Static app; this package only holds the test tooling.",
+  "scripts": {
+    "test": "node --test tests/logic.test.mjs",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-trip-split \"node --test tests/rules.test.mjs\"",
+    "test:all": "npm test && npm run test:rules"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^11.0.0",
+    "firebase-tools": "^13.0.0"
+  }
+}
