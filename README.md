@@ -13,7 +13,7 @@ A shared-expense tracker for a group — split costs, see who owes who, and sett
 - Full audit trail: every add, edit, delete, and settlement confirmation records who and when
 - Categories on every expense, a spending-by-category breakdown on Home, and ledger search plus category and date-range filters
 - Repeating expenses (weekly or monthly): the next time anyone opens the app, due occurrences are added once each. There is no background scheduler, so nothing is added while nobody opens the app; it catches up on the next open.
-- Close a trip when it's finished (owner only): no new expenses, settling up still works, reopen any time. Enforced by the security rules, not just the screen (once the current `firestore.rules` is published).
+- Close a trip when it's finished (owner only): no new expenses, settling up still works, reopen any time. Enforced by the security rules, not just the screen.
 - Alerts while the app is open (browser notifications). This is not background push: nothing arrives when the app is closed, because that needs a server.
 - Trip switcher: tap the trip name to jump between every trip you've opened
 - Installable: use "Add to Home Screen" / "Install" in your browser for an app-style launcher (web app manifest and icons; no offline page caching beyond what Firestore stores)
