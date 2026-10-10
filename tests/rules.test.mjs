@@ -248,7 +248,8 @@ describe("repeating expenses", () => {
   });
   test("…but can't use a template to attribute an expense to someone else", async () => {
     await seed();
-    await assertFails(setDoc(D(as("bob"), "expenses", "rec_x"), { type: "expense", description: "Rent", amount: 900, payerId: "mA", participantIds: ["mA"], createdAt: 1, addedBy: "mB", recurringId: "r1" }));
+    // attributing it to a third member (not bob, not the template's creator) is refused
+    await assertFails(setDoc(D(as("bob"), "expenses", "rec_x"), { type: "expense", description: "Rent", amount: 900, payerId: "mA", participantIds: ["mA"], createdAt: 1, addedBy: "mC", recurringId: "r1" }));
     await assertFails(setDoc(D(as("bob"), "expenses", "rec_y"), { type: "expense", description: "x", amount: 9, payerId: "mA", participantIds: ["mA"], createdAt: 1, addedBy: "mA", recurringId: "nope" }));
   });
 });
