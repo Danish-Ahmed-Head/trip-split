@@ -18,8 +18,8 @@ A shared-expense tracker for a group — split costs, see who owes who, and sett
 - Receipt photos: attach a photo to an expense. It is shrunk to a small JPEG and kept in its own document, fetched only when opened; visible to trip members only.
 - Payment details and "How to pay": each member can save their JazzCash / Easypaisa number and Raast ID / IBAN. The person who owes sees them with Copy buttons on their settle-up row, then pays in their own banking or wallet app and taps Mark paid. Trip Split never moves money.
 - Share on WhatsApp: the trip summary, or a "I'm paying you" message from the How-to-pay sheet.
-- Alerts while the app is open (browser notifications). This is not background push: nothing arrives when the app is closed, because that needs a server.
-- Trip switcher: tap the trip name to jump between every trip you've opened
+- Alerts: a browser notification when someone adds an expense that involves you, marks a payment to you, or confirms or disputes yours. They work while the app is open; with closed-app alerts set up (below) they also arrive when it is closed, within a few minutes.
+- Trip switcher: tap the trip name to jump between every trip you've opened, with what you are owed or owe in each one
 - Installable: use "Add to Home Screen" / "Install" in your browser for an app-style launcher (web app manifest and icons; no offline page caching beyond what Firestore stores)
 - Multiple trips from one app, each with its own shareable link
 - Works offline — expenses added with no signal sync automatically once you're back online
@@ -40,12 +40,24 @@ Deliberately minimal — a single `index.html` (vanilla JS, ES modules, no build
 
 Runs entirely on Firebase's free Spark plan. No backend server.
 
+## Closed-app alerts, still free
+
+Cloud Functions would need the paid Firebase plan, so a scheduled GitHub Actions job does the sending instead:
+
+1. Whoever does something (adds an expense, marks paid, confirms, disputes) writes a small marker to `pushEvents`. It holds no text and no recipient.
+2. Every 5 minutes `.github/workflows/push.yml` runs `scripts/send-push.mjs`. For each new marker it reads the expense, works out who is involved and what to say (`push/plan.js`), and sends through Firebase Cloud Messaging, which is free.
+3. `firebase-messaging-sw.js` shows the notification. It caches nothing.
+
+One-time setup: add the repository secret `FIREBASE_SERVICE_ACCOUNT` (a service-account JSON from Firebase console, Project settings, Service accounts). Until it exists the job exits cleanly and does nothing. The public web-push key is already in `index.html`.
+
+Limits: GitHub may delay a scheduled run by a few minutes, so alerts are near-real-time rather than instant. GitHub pauses scheduled workflows on a public repo after 60 days with no repository activity. On iPhone the app must be added to the Home Screen first.
+
 ## Tests
 
 ```bash
 npm install
-npm test            # unit tests: balances, splits, settle-up, filters, recurrence (no Java needed)
-npm run test:rules  # Security Rules tests against the Firestore emulator (needs Java 11+)
+npm test            # unit tests: balances, splits, settle-up, filters, recurrence, alert planning (no Java needed)
+npm run test:rules  # Security Rules tests and a full alert-job sweep against the Firestore emulator (needs Java 11+)
 ```
 
 Both run on every push in GitHub Actions (`.github/workflows/test.yml`). `logic.js` holds the pure logic so it can be tested outside the browser; `index.html` imports it.
@@ -91,4 +103,6 @@ Phase 2 shipped 2026-10-10: categories, filters, repeating expenses, in-app aler
 
 Phase 3 shipped 2026-10-12: unequal splits, receipt photos, payment details with a How-to-pay helper, and WhatsApp sharing.
 
-Deliberately not built: real payment-rail integration (JazzCash/Easypaisa/Raast APIs need merchant onboarding and a server, so the app stores payment details and guides the payer instead), true background push (needs Cloud Functions on the paid plan), per-trip balances in the trip switcher.
+Phase 4 (2026-10-12): per-trip balances in the trip switcher, and closed-app alerts through Firebase Cloud Messaging sent by a scheduled GitHub job, so it stays on free tiers.
+
+Deliberately not built: real payment-rail integration (JazzCash/Easypaisa/Raast APIs need merchant onboarding, fees and a server, so the app stores payment details and guides the payer instead).
