@@ -356,7 +356,10 @@
   .trip-row{display:flex; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid var(--border); cursor:pointer; text-decoration:none; color:var(--ink);}
   .trip-row:last-child{border-bottom:none;}
   .trip-row .name{flex:1; font-weight:600; font-size:14px;}
-  .trip-row .meta{font-size:12px; color:var(--ink-muted);}
+  .trip-row .meta{font-size:12px; color:var(--ink-muted); text-align:right;}
+  .trip-row .meta.pos{color:var(--positive); font-weight:600;}
+  .trip-row .meta.neg{color:var(--negative); font-weight:600;}
+  .trip-row .meta small{display:block; font-weight:400; color:var(--ink-muted);}
 
   /* ---- split inputs, payment details ---- */
   .split-row{display:flex; align-items:center; gap:10px; margin-bottom:8px;}
@@ -569,7 +572,8 @@
 
     <div class="section-label">Alerts on this device</div>
     <div class="card" style="padding:14px;">
-      <div style="font-size:12px; color:var(--ink-muted); margin-bottom:10px;" id="alertsNote">Get a notification when someone adds an expense or marks a payment while Trip Split is open. This is not background push: nothing arrives if the app is closed.</div>
+      <div style="font-size:12px; color:var(--ink-muted); margin-bottom:10px;" id="alertsNote">Get a notification when someone adds an expense, marks a payment, or confirms one.</div>
+      <div style="font-size:12px; color:var(--ink-muted); margin-bottom:10px;" id="alertsStatus"></div>
       <button type="button" class="btn-secondary" id="p-alerts" style="width:100%;"></button>
     </div>
 
@@ -781,12 +785,13 @@ function colorFor(id){
 function initials(name){
   return (name||"?").trim().split(/\s+/).slice(0,2).map(w=>w[0]?.toUpperCase()||"").join("") || "?";
 }
-function fmtMoney(n){
+function fmtMoney(n, currency){
   const v = Number(n)||0;
+  const cur = currency || tripSettings.currency;
   try{
-    return new Intl.NumberFormat(undefined,{style:"currency",currency:tripSettings.currency,maximumFractionDigits:2}).format(v);
+    return new Intl.NumberFormat(undefined,{style:"currency",currency:cur,maximumFractionDigits:2}).format(v);
   }catch(e){
-    return tripSettings.currency + " " + v.toFixed(2);
+    return cur + " " + v.toFixed(2);
   }
 }
 function toast(msg){
@@ -1033,7 +1038,7 @@ function renderHome(){
         const from = btn.dataset.from, to = btn.dataset.to, amt = parseFloat(btn.dataset.amt);
         btn.disabled = true; btn.textContent = "Saving…";
         try{
-          await addDoc(expensesCol(), {
+          const settleRef = await addDoc(expensesCol(), {
             type: "settlement",
             description: "Settlement",
             amount: amt,
@@ -1044,6 +1049,7 @@ function renderHome(){
             confirmedBy: null,
             confirmedAt: null
           });
+          emitPushEvent("settlement_marked", settleRef.id);
           saveToast("Marked paid — waiting for " + nameOf(to) + " to confirm");
         }catch(e){
           errorToast(e, "Couldn't save — check your connection");
@@ -1077,6 +1083,7 @@ function renderHome(){
         btn.disabled = true;
         try{
           await updateDoc(expenseDoc(btn.dataset.id), {confirmedBy: meId, confirmedAt: Date.now()});
+          emitPushEvent("settlement_confirmed", btn.dataset.id);
           saveToast("Confirmed received");
         }catch(e){ errorToast(e, "Couldn't save — check your connection"); btn.disabled = false; }
       });
@@ -1087,6 +1094,7 @@ function renderHome(){
         btn.disabled = true;
         try{
           await updateDoc(expenseDoc(btn.dataset.id), {disputed:true, disputedBy: meId, disputedAt: Date.now()});
+          emitPushEvent("settlement_disputed", btn.dataset.id);
           saveToast("Marked as disputed");
         }catch(e){ errorToast(e, "Couldn't save — check your connection"); btn.disabled = false; }
       });
@@ -1359,6 +1367,7 @@ document.getElementById("addForm").addEventListener("submit", async (e)=>{
       });
       if (receipt) batch.set(receiptDoc(ref.id), {data: receipt, by: meId, createdAt: Date.now()});
       await batch.commit();
+      emitPushEvent("expense_added", ref.id);
       resetAddForm();
       saveToast("Expense added");
       document.querySelector('.tab-btn[data-view="home"]').click();
@@ -1776,32 +1785,131 @@ function alertsOn(){
   try{ return localStorage.getItem(ALERTS_KEY) === "1" && typeof Notification !== "undefined" && Notification.permission === "granted"; }
   catch(e){ return false; }
 }
+
+/* Background alerts (free): when the app is closed, alerts come from Firebase
+   Cloud Messaging. Nothing here sends them; each action drops a small marker
+   (pushEvents) and a scheduled GitHub Actions job (.github/workflows/push.yml)
+   turns markers into notifications. Needs FCM_VAPID_KEY (a public key). */
+const FCM_VAPID_KEY = "";
+const PUSH_KEY = "tripSplitPush";
+let pushState = "off"; // off | on | unavailable | blocked | notconfigured | error
+
+async function pushSupported(){
+  if (!FCM_VAPID_KEY) return "notconfigured";
+  if (!("serviceWorker" in navigator) || typeof Notification === "undefined" || !("PushManager" in window)) return "unavailable";
+  return "ok";
+}
+async function getPushToken(){
+  const [{ isSupported, getMessaging, getToken }] = await Promise.all([
+    import("https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js"),
+  ]);
+  if (!(await isSupported())) return null;
+  const reg = await navigator.serviceWorker.register("./firebase-messaging-sw.js", { scope: "./" });
+  await navigator.serviceWorker.ready;
+  return getToken(getMessaging(app), { vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: reg });
+}
+async function enablePush(){
+  const s = await pushSupported();
+  if (s !== "ok"){ pushState = s; return false; }
+  try{
+    const token = await getPushToken();
+    if (!token){ pushState = "unavailable"; return false; }
+    await setDoc(doc(db, "pushTokens", uid), { tokens: window.arrayUnion(token), updatedAt: Date.now() }, { merge: true });
+    try{ localStorage.setItem(PUSH_KEY, "1"); }catch(e){}
+    pushState = "on";
+    return true;
+  }catch(e){
+    pushState = (e && e.code === "messaging/permission-blocked") ? "blocked" : "error";
+    return false;
+  }
+}
+async function disablePush(){
+  try{ localStorage.setItem(PUSH_KEY, "0"); }catch(e){}
+  pushState = "off";
+  try{
+    const { getMessaging, getToken, deleteToken } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js");
+    const reg = await navigator.serviceWorker.getRegistration("./");
+    if (reg){
+      const token = await getToken(getMessaging(app), { vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: reg });
+      if (token) await setDoc(doc(db, "pushTokens", uid), { tokens: window.arrayRemove(token), updatedAt: Date.now() }, { merge: true });
+      await deleteToken(getMessaging(app));
+    }
+  }catch(e){ /* the server drops dead tokens by itself */ }
+}
+// after sign-in on a device that already opted in: keep the token fresh, silently
+async function refreshPushToken(){
+  let wanted = false;
+  try{ wanted = localStorage.getItem(PUSH_KEY) === "1"; }catch(e){}
+  if (!wanted || typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  await enablePush();
+  renderAlertsButton();
+}
+function emitPushEvent(kind, expenseId){
+  if (!db || !uid || !expenseId) return;
+  const tripKey = TRIP_ID || "default";
+  setDoc(doc(db, "pushEvents", `${tripKey}_${expenseId}_${kind}`),
+    { tripKey, expenseId, kind, fromUid: uid, processed: false, createdAt: Date.now() }).catch(()=>{ /* best effort */ });
+}
+
 function renderAlertsButton(){
   const btn = document.getElementById("p-alerts");
+  const status = document.getElementById("alertsStatus");
   if (typeof Notification === "undefined"){
-    btn.textContent = "Not supported in this browser"; btn.disabled = true; return;
+    btn.textContent = "Not supported in this browser"; btn.disabled = true; status.textContent = ""; return;
   }
   btn.textContent = alertsOn() ? "Turn alerts off" : "Turn alerts on";
+  const on = alertsOn();
+  const msg = {
+    on: "Also on when the app is closed: you'll get alerts within a few minutes.",
+    notconfigured: "Alerts arrive while the app is open. Closed-app alerts aren't switched on for this app yet.",
+    unavailable: "Alerts arrive while the app is open. This browser can't do closed-app alerts (on iPhone, add the app to your Home Screen first).",
+    blocked: "Alerts arrive while the app is open. Closed-app alerts are blocked in your browser settings.",
+    error: "Alerts arrive while the app is open. Closed-app alerts couldn't be set up; try turning alerts off and on again.",
+    off: "",
+  };
+  status.textContent = on ? (msg[pushState] || "") : "";
 }
 document.getElementById("p-alerts").addEventListener("click", async ()=>{
   if (alertsOn()){
     try{ localStorage.setItem(ALERTS_KEY, "0"); }catch(e){}
+    await disablePush();
     renderAlertsButton(); toast("Alerts off"); return;
   }
   const perm = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
   if (perm === "granted"){
     try{ localStorage.setItem(ALERTS_KEY, "1"); }catch(e){}
     toast("Alerts on for this device");
+    await enablePush();
   } else toast("Notifications are blocked in your browser settings");
   renderAlertsButton();
 });
-function notifyActivity(e){
+function notifyActivity(e, id){
   if (!alertsOn() || !meId || e.addedBy === meId) return;
   if ((e.createdAt || 0) <= appLoadedAt) return;
-  const body = e.type === "settlement"
-    ? `${nameOf(e.payerId)} says they paid ${nameOf((e.participantIds||[])[0])} ${fmtMoney(e.amount)}`
-    : `${nameOf(e.payerId)} added ${e.description} (${fmtMoney(e.amount)})`;
-  try{ new Notification(tripSettings.name || "Trip Split", {body}); }catch(err){}
+  const isSettle = e.type === "settlement";
+  // only tell people the event concerns: a settlement is for the person paid;
+  // an expense is for whoever is in its split or paid for it
+  if (isSettle && (e.participantIds||[])[0] !== meId) return;
+  if (!isSettle && e.payerId !== meId && !(meId in L.expenseShares(e))) return;
+  const body = isSettle
+    ? `${nameOf(e.payerId)} says they paid you ${fmtMoney(e.amount)}`
+    : `${nameOf(e.addedBy)} added ${e.description} (${fmtMoney(e.amount)})`;
+  // same tag as the closed-app alert, so the two replace each other, not double up
+  const tag = `${TRIP_ID || "default"}_${id}_${isSettle ? "settlement_marked" : "expense_added"}`;
+  try{ new Notification(tripSettings.name || "Trip Split", {body, tag}); }catch(err){}
+}
+// the person who paid hears when the other side confirms or disputes
+function notifyOutcome(before, after){
+  if (!alertsOn() || !meId || after.type !== "settlement" || after.payerId !== meId) return;
+  const confirmed = !(before && before.confirmedBy) && after.confirmedBy;
+  const disputed = !(before && before.disputed) && after.disputed;
+  if (!confirmed && !disputed) return;
+  const who = nameOf((after.participantIds||[])[0]);
+  const body = confirmed
+    ? `${who} confirmed your ${fmtMoney(after.amount)} payment`
+    : `${who} disputed your ${fmtMoney(after.amount)} payment`;
+  const tag = `${TRIP_ID || "default"}_${after.id}_${confirmed ? "settlement_confirmed" : "settlement_disputed"}`;
+  try{ new Notification(tripSettings.name || "Trip Split", {body, tag}); }catch(err){}
 }
 
 /* ---------- my trips (switcher) ---------- */
@@ -1817,6 +1925,32 @@ async function registerTripForUser(){
   }catch(e){ registeredKey = null; /* rules for users/ may not be published yet */ }
 }
 const tripsBackdrop = document.getElementById("tripsBackdrop");
+// Your balance in each trip. Read on demand (3 small reads per trip), never in
+// the background, and kept for a minute so reopening the list is instant.
+const standingCache = {};
+async function loadTripStanding(t){
+  const hit = standingCache[t.key];
+  if (hit && Date.now() - hit.at < 60000) return hit.value;
+  const base = t.id ? `trips/${t.id}/` : "";
+  const [mSnap, eSnap, sSnap] = await Promise.all([
+    getDocs(collection(db, base + "members")),
+    getDocs(collection(db, base + "expenses")),
+    getDoc(t.id ? doc(db, "trips", t.id) : doc(db, "settings", "trip")),
+  ]);
+  const ms = mSnap.docs.map(d=>({id:d.id, ...d.data()}));
+  const es = eSnap.docs.map(d=>({id:d.id, ...d.data()}));
+  const s = sSnap.exists() ? sSnap.data() : {};
+  const value = { ...L.myStanding(ms, es, uid), currency: s.currency || DEFAULT_CURRENCY, closed: !!s.closed };
+  standingCache[t.key] = { at: Date.now(), value };
+  return value;
+}
+function standingHtml(st){
+  if (!st.linked) return `<small>not linked in this trip</small>`;
+  if (st.net > 0.01) return `${escapeHtml(fmtMoney(st.net, st.currency))}<small>you are owed</small>`;
+  if (st.net < -0.01) return `${escapeHtml(fmtMoney(-st.net, st.currency))}<small>you owe</small>`;
+  return `settled up`;
+}
+function standingClass(st){ return !st.linked ? "" : st.net > 0.01 ? "pos" : st.net < -0.01 ? "neg" : ""; }
 function openTrips(){
   const entries = Object.entries(myTrips).map(([k, v])=>({key:k, ...v})).sort((a,b)=>(b.lastSeen||0)-(a.lastSeen||0));
   const list = document.getElementById("tripsList");
@@ -1824,11 +1958,23 @@ function openTrips(){
   list.innerHTML = entries.length ? entries.map(t=>{
     const href = t.id ? `?trip=${encodeURIComponent(t.id)}` : location.pathname;
     return `<a class="trip-row" href="${href}">
-      <span class="name">${escapeHtml(t.name || "Trip")}</span>
-      <span class="meta">${t.key === here ? "open now" : ""}</span>
+      <span class="name">${escapeHtml(t.name || "Trip")}${t.key === here ? ' <small style="font-weight:400; color:var(--ink-muted);">· open now</small>' : ""}</span>
+      <span class="meta" data-trip="${escapeHtml(t.key)}">…</span>
     </a>`;
   }).join("") : `<div class="empty-note">Trips you open while signed in will show up here.</div>`;
   tripsBackdrop.classList.add("open");
+  entries.forEach(async t=>{
+    const cell = list.querySelector(`.meta[data-trip="${CSS.escape(t.key)}"]`);
+    if (!cell) return;
+    try{
+      // the trip you're in is already loaded and live; use it, don't re-read it
+      const st = t.key === here && uid
+        ? { ...L.myStanding(members, expenses, uid), currency: tripSettings.currency }
+        : await loadTripStanding(t);
+      cell.className = "meta " + standingClass(st);
+      cell.innerHTML = standingHtml(st);
+    }catch(e){ cell.textContent = ""; }
+  });
 }
 document.getElementById("tripSwitcher").addEventListener("click", openTrips);
 document.getElementById("tripSwitcher").addEventListener("keydown", e=>{ if (e.key==="Enter" || e.key===" "){ e.preventDefault(); openTrips(); }});
@@ -1913,6 +2059,7 @@ async function boot(){
   window.collection = _collection; window.doc = _doc; window.addDoc = _addDoc;
   window.updateDoc = _updateDoc; window.setDoc = _setDoc; window.deleteDoc = _deleteDoc;
   window.writeBatch = writeBatch; window.signOut = signOut; window.runTransaction = runTransaction; window.getDoc = fsMod.getDoc;
+  window.getDocs = fsMod.getDocs; window.arrayUnion = fsMod.arrayUnion; window.arrayRemove = fsMod.arrayRemove;
 
   app = initializeApp(FIREBASE_CONFIG);
   auth = getAuth(app);
@@ -2012,11 +2159,17 @@ async function boot(){
       toast("Sync error: " + err.code);
     });
 
+    refreshPushToken();
+
     let firstExpensesSnap = true;
     _onSnapshot(expensesCol(), (snap)=>{
+      const before = new Map(expenses.map(x=>[x.id, x]));
       expenses = snap.docs.map(d=>({id:d.id, ...d.data()}));
       if (!firstExpensesSnap && !snap.metadata.hasPendingWrites){
-        snap.docChanges().forEach(ch=>{ if (ch.type === "added") notifyActivity(ch.doc.data()); });
+        snap.docChanges().forEach(ch=>{
+          if (ch.type === "added") notifyActivity(ch.doc.data(), ch.doc.id);
+          else if (ch.type === "modified") notifyOutcome(before.get(ch.doc.id), {id: ch.doc.id, ...ch.doc.data()});
+        });
       }
       firstExpensesSnap = false;
       renderAll();

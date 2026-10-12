@@ -392,3 +392,65 @@ describe("unequal splits and templates carry through the rules", () => {
     await assertFails(updateDoc(D(as("bob"), "expenses", "e1"), { shares: { mA: 0, mB: 300 } }));
   });
 });
+
+// ---- background alerts: pushTokens + pushEvents ---------------------------
+describe("background alerts", () => {
+  const ev = (over = {}) => ({
+    tripKey: "default", expenseId: "e1", kind: "expense_added",
+    fromUid: "ali", processed: false, createdAt: 10, ...over,
+  });
+  const evId = (o = ev()) => `${o.tripKey}_${o.expenseId}_${o.kind}`;
+
+  test("a linked member can write an event for their own trip", async () => {
+    await seed();
+    await assertSucceeds(setDoc(D(as("ali"), "pushEvents", evId()), ev()));
+  });
+  test("a signed-in non-member can't", async () => {
+    await seed();
+    await assertFails(setDoc(D(as("eve"), "pushEvents", evId(ev({ fromUid: "eve" }))), ev({ fromUid: "eve" })));
+  });
+  test("fromUid can't be forged", async () => {
+    await seed();
+    await assertFails(setDoc(D(as("ali"), "pushEvents", evId()), ev({ fromUid: "bob" })));
+  });
+  test("an event can't arrive already processed, or with extra fields", async () => {
+    await seed();
+    await assertFails(setDoc(D(as("ali"), "pushEvents", evId()), ev({ processed: true })));
+    await assertFails(setDoc(D(as("ali"), "pushEvents", evId()), ev({ to: "bob" })));
+  });
+  test("the id must match trip, expense and kind; unknown kinds are refused", async () => {
+    await seed();
+    await assertFails(setDoc(D(as("ali"), "pushEvents", "whatever"), ev()));
+    const bad = ev({ kind: "free_money" });
+    await assertFails(setDoc(D(as("ali"), "pushEvents", evId(bad)), bad));
+  });
+  test("events are create-once: no overwrite, update, delete or read by clients", async () => {
+    await seed();
+    await assertSucceeds(setDoc(D(as("ali"), "pushEvents", evId()), ev()));
+    await assertFails(setDoc(D(as("ali"), "pushEvents", evId()), ev({ createdAt: 99 })));
+    await assertFails(updateDoc(D(as("ali"), "pushEvents", evId()), { processed: true }));
+    await assertFails(getDoc(D(as("ali"), "pushEvents", evId())));
+  });
+  test("a nested trip needs a link in THAT trip", async () => {
+    await seed();
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), "trips", "t1", "memberLinks", "bob"), { memberId: "x" });
+    });
+    const o = ev({ tripKey: "t1", fromUid: "bob" });
+    await assertSucceeds(setDoc(D(as("bob"), "pushEvents", evId(o)), o));
+    const p = ev({ tripKey: "t1", fromUid: "ali" });
+    await assertFails(setDoc(D(as("ali"), "pushEvents", evId(p)), p));
+  });
+
+  test("device tokens: only the owner can read or write them", async () => {
+    await assertSucceeds(setDoc(D(as("ali"), "pushTokens", "ali"), { tokens: ["t1"], updatedAt: 1 }));
+    await assertSucceeds(getDoc(D(as("ali"), "pushTokens", "ali")));
+    await assertFails(getDoc(D(as("bob"), "pushTokens", "ali")));
+    await assertFails(setDoc(D(as("bob"), "pushTokens", "ali"), { tokens: ["evil"], updatedAt: 1 }));
+  });
+  test("device tokens: shape is enforced", async () => {
+    await assertFails(setDoc(D(as("ali"), "pushTokens", "ali"), { tokens: "t1", updatedAt: 1 }));
+    await assertFails(setDoc(D(as("ali"), "pushTokens", "ali"), { tokens: Array(11).fill("t"), updatedAt: 1 }));
+    await assertFails(setDoc(D(as("ali"), "pushTokens", "ali"), { tokens: ["t"], updatedAt: 1, admin: true }));
+  });
+});

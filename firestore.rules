@@ -182,6 +182,44 @@ service cloud.firestore {
       allow read, write: if signedIn() && request.auth.uid == uid;
     }
 
+    // ================= background alerts (free: FCM + a scheduled GitHub job) =================
+    //
+    // pushTokens/{uid}: this person's device tokens. Only they can read or write
+    // them; the sender job reads them with a service account.
+    // pushEvents/{id}: "something happened on expense X" markers written by the
+    // person who did it. They carry no text and no recipient: the job looks the
+    // expense up and works out who to tell and what to say. The id is
+    // <trip>_<expense>_<kind>, create-only, so an event can fire at most once and
+    // can't be rewritten. Clients can't read them back.
+
+    function hasTripLink(tripKey) {
+      return tripKey == 'default'
+        ? exists(/databases/$(database)/documents/memberLinks/$(request.auth.uid))
+        : exists(/databases/$(database)/documents/trips/$(tripKey)/memberLinks/$(request.auth.uid));
+    }
+
+    match /pushTokens/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['tokens', 'updatedAt'])
+        && request.resource.data.tokens is list && request.resource.data.tokens.size() <= 10;
+      allow delete: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /pushEvents/{eventId} {
+      allow read: if false;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['tripKey', 'expenseId', 'kind', 'fromUid', 'processed', 'createdAt'])
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.processed == false
+        && request.resource.data.tripKey is string && request.resource.data.tripKey.size() <= 40
+        && request.resource.data.expenseId is string && request.resource.data.expenseId.size() <= 80
+        && request.resource.data.kind in ['expense_added', 'settlement_marked', 'settlement_confirmed', 'settlement_disputed']
+        && eventId == request.resource.data.tripKey + '_' + request.resource.data.expenseId + '_' + request.resource.data.kind
+        && hasTripLink(request.resource.data.tripKey);
+      allow update, delete: if false;
+    }
+
     // ================= created trips (nested paths) =================
 
     match /trips/{tripId} {
