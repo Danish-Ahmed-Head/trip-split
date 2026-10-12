@@ -14,6 +14,10 @@ A shared-expense tracker for a group — split costs, see who owes who, and sett
 - Categories on every expense, a spending-by-category breakdown on Home, and ledger search plus category and date-range filters
 - Repeating expenses (weekly or monthly): the next time anyone opens the app, due occurrences are added once each. There is no background scheduler, so nothing is added while nobody opens the app; it catches up on the next open.
 - Close a trip when it's finished (owner only): no new expenses, settling up still works, reopen any time. Enforced by the security rules, not just the screen.
+- Unequal splits: equally, by exact amounts, by percentage, or by shares (e.g. 2 : 1). Amounts always add up to the total to the cent.
+- Receipt photos: attach a photo to an expense. It is shrunk to a small JPEG and kept in its own document, fetched only when opened; visible to trip members only.
+- Payment details and "How to pay": each member can save their JazzCash / Easypaisa number and Raast ID / IBAN. The person who owes sees them with Copy buttons on their settle-up row, then pays in their own banking or wallet app and taps Mark paid. Trip Split never moves money.
+- Share on WhatsApp: the trip summary, or a "I'm paying you" message from the How-to-pay sheet.
 - Alerts while the app is open (browser notifications). This is not background push: nothing arrives when the app is closed, because that needs a server.
 - Trip switcher: tap the trip name to jump between every trip you've opened
 - Installable: use "Add to Home Screen" / "Install" in your browser for an app-style launcher (web app manifest and icons; no offline page caching beyond what Firestore stores)
@@ -40,7 +44,7 @@ Runs entirely on Firebase's free Spark plan. No backend server.
 
 ```bash
 npm install
-npm test            # 22 unit tests: balances, settle-up, filters, recurrence (no Java needed)
+npm test            # unit tests: balances, splits, settle-up, filters, recurrence (no Java needed)
 npm run test:rules  # Security Rules tests against the Firestore emulator (needs Java 11+)
 ```
 
@@ -83,6 +87,8 @@ Ask whoever's maintaining this for the current links, or check the session histo
 
 Phase 1 (real auth, authorization, two-step settlements, balance sheet) is live and verified with one real account. Not yet verified: a second real account going through sign-in → claim → confirm, and the negative-case authorization checks (can someone confirm a settlement that isn't theirs, edit someone else's expense, etc.) against a second identity. See the Test Plan tab for the open items.
 
-Phase 2 shipped 2026-10-10: categories, filters, repeating expenses, in-app alerts, trip switcher, installable manifest, server-enforced closed trips, and automated tests. Not built from Phase 2: true background push notifications (needs Cloud Functions on the paid Blaze plan) and per-trip balances in the switcher.
+Phase 2 shipped 2026-10-10: categories, filters, repeating expenses, in-app alerts, trip switcher, installable manifest, server-enforced closed trips, and automated tests.
 
-Phase 3 (JazzCash/Easypaisa/Raast payment integration, receipt photos, unequal splits) is planned, not started.
+Phase 3 shipped 2026-10-12: unequal splits, receipt photos, payment details with a How-to-pay helper, and WhatsApp sharing.
+
+Deliberately not built: real payment-rail integration (JazzCash/Easypaisa/Raast APIs need merchant onboarding and a server, so the app stores payment details and guides the payer instead), true background push (needs Cloud Functions on the paid plan), per-trip balances in the trip switcher.

@@ -358,6 +358,17 @@
   .trip-row .name{flex:1; font-weight:600; font-size:14px;}
   .trip-row .meta{font-size:12px; color:var(--ink-muted);}
 
+  /* ---- split inputs, payment details ---- */
+  .split-row{display:flex; align-items:center; gap:10px; margin-bottom:8px;}
+  .split-row .who{flex:1; font-size:14px; font-weight:500; min-width:0; overflow:hidden; text-overflow:ellipsis;}
+  .split-row input{width:110px; text-align:right; font-family:var(--font-mono);}
+  .pay-row{display:flex; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid var(--border);}
+  .pay-row:last-child{border-bottom:none;}
+  .pay-row .lab{font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-muted);}
+  .pay-row .val{font-family:var(--font-mono); font-size:14px; word-break:break-all;}
+  .pay-row .grow{flex:1; min-width:0;}
+  .link-btn{background:none; border:none; color:var(--accent); font-size:12px; font-weight:600; cursor:pointer; padding:4px 0;}
+
   /* ---- balance sheet drill-in ---- */
   .hero.tappable{cursor:pointer;}
   .balsheet-group{padding:4px 0;}
@@ -466,6 +477,22 @@
           <button type="button" id="splitNone">Select none</button>
         </div>
       </div>
+      <div class="field">
+        <label for="f-splitmode">How to split</label>
+        <select class="input" id="f-splitmode">
+          <option value="equal">Equally</option>
+          <option value="exact">By exact amounts</option>
+          <option value="percent">By percentage</option>
+          <option value="shares">By shares (e.g. 2 : 1)</option>
+        </select>
+        <div id="splitInputs" style="display:none; margin-top:10px;"></div>
+        <div id="splitHint" style="display:none; font-size:12px; margin-top:8px; color:var(--ink-muted);"></div>
+      </div>
+      <div class="field">
+        <label for="f-receipt">Receipt photo (optional)</label>
+        <input class="input" id="f-receipt" type="file" accept="image/*" />
+        <div id="receiptNote" style="font-size:12px; color:var(--ink-muted); margin-top:6px;">Shrunk to a small JPEG before it is saved.</div>
+      </div>
       <div class="field" id="repeatField">
         <label for="f-repeat">Repeat</label>
         <select class="input" id="f-repeat">
@@ -527,6 +554,16 @@
       </div>
     </div>
 
+    <div class="section-label">My payment details</div>
+    <div class="card" style="padding:14px;">
+      <div style="font-size:12px; color:var(--ink-muted); margin-bottom:10px;">So friends know where to send what they owe you. Only people signed in to this trip can see these. Money is sent outside Trip Split, in your bank or wallet app; the app never moves money.</div>
+      <div class="field" style="margin-bottom:10px;"><label for="pay-jazz">JazzCash number</label><input class="input" id="pay-jazz" type="tel" maxlength="20" placeholder="03xx xxxxxxx" /></div>
+      <div class="field" style="margin-bottom:10px;"><label for="pay-easy">Easypaisa number</label><input class="input" id="pay-easy" type="tel" maxlength="20" placeholder="03xx xxxxxxx" /></div>
+      <div class="field" style="margin-bottom:10px;"><label for="pay-bank">Raast ID / IBAN / bank account</label><input class="input" id="pay-bank" type="text" maxlength="60" placeholder="PK00 XXXX 0000000000000000" /></div>
+      <div class="field" style="margin-bottom:12px;"><label for="pay-note">Note</label><input class="input" id="pay-note" type="text" maxlength="80" placeholder="e.g. account title" /></div>
+      <button type="button" class="btn-secondary" id="pay-save" style="width:100%;">Save my payment details</button>
+    </div>
+
     <div class="section-label" id="recurLabel" style="display:none;">Repeating expenses</div>
     <div class="card" id="recurCard" style="display:none;"></div>
 
@@ -549,6 +586,7 @@
     <div class="card" style="padding:14px; display:flex; flex-direction:column; gap:10px;">
       <button type="button" class="btn-secondary" id="p-exporttext">Copy summary as text</button>
       <button type="button" class="btn-secondary" id="p-exportcsv">Download expenses as CSV</button>
+      <button type="button" class="btn-secondary" id="p-sharewa">Share summary on WhatsApp</button>
     </div>
 
     <div class="section-label">Trips</div>
@@ -632,6 +670,25 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="receiptBackdrop">
+  <div class="modal-sheet">
+    <h2>Receipt</h2>
+    <div class="sub" id="receiptSub"></div>
+    <img id="receiptImg" alt="Receipt photo" style="width:100%; border-radius:12px; border:1px solid var(--border);" />
+    <button type="button" class="btn-secondary" id="receiptClose" style="width:100%; margin-top:14px;">Close</button>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="payBackdrop">
+  <div class="modal-sheet">
+    <h2 id="payTitle">How to pay</h2>
+    <div class="sub" id="paySub"></div>
+    <div class="card" id="payList"></div>
+    <button type="button" class="btn-secondary" id="payWhatsapp" style="width:100%; margin-top:14px;">Tell them on WhatsApp</button>
+    <button type="button" class="btn-secondary" id="payClose" style="width:100%; margin-top:8px;">Close</button>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="tripsBackdrop">
   <div class="modal-sheet">
     <h2>Your trips</h2>
@@ -677,6 +734,8 @@ const EXPENSES_PATH = TRIP_ID ? `trips/${TRIP_ID}/expenses` : "expenses";
 // user" by a direct doc lookup (rules can't run a "find where authUid==uid" query)
 const MEMBERLINKS_PATH = TRIP_ID ? `trips/${TRIP_ID}/memberLinks` : "memberLinks";
 const RECURRING_PATH = TRIP_ID ? `trips/${TRIP_ID}/recurring` : "recurring";
+const RECEIPTS_PATH = TRIP_ID ? `trips/${TRIP_ID}/receipts` : "receipts";
+const PAYMENTINFO_PATH = TRIP_ID ? `trips/${TRIP_ID}/paymentInfo` : "paymentInfo";
 
 /* ---------- setup guard ---------- */
 const needsSetup = !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey === "YOUR_API_KEY";
@@ -694,6 +753,7 @@ let expenses = [];      // {id, type, description, amount, payerId, participantI
 let tripSettings = { name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY, ownerUid: null, closed: false };
 let recurring = [];     // {id, description, amount, payerId, participantIds, category, interval, startDate, active, createdBy}
 let myTrips = {};       // from users/<uid>.trips
+let paymentInfo = {};   // memberId -> {jazzcash, easypaisa, bank, note}
 let tripNotFound = false;
 let editingExpenseId = null;
 let showDeleted = false;
@@ -708,6 +768,9 @@ function memberLinkDoc(forUid){ return doc(db, MEMBERLINKS_PATH, forUid); }
 function recurringCol(){ return collection(db, RECURRING_PATH); }
 function recurringDoc(id){ return doc(db, RECURRING_PATH, id); }
 function userDoc(forUid){ return doc(db, "users", forUid); }
+function receiptDoc(expenseId){ return doc(db, RECEIPTS_PATH, expenseId); }
+function paymentDoc(memberId){ return doc(db, PAYMENTINFO_PATH, memberId); }
+function paymentCol(){ return collection(db, PAYMENTINFO_PATH); }
 function tripSettingsRef(){ return TRIP_ID ? doc(db, "trips", TRIP_ID) : doc(db, "settings", "trip"); }
 
 const AVATAR_COLORS = ["#146F66","#B5453A","#8E6F14","#3A5FB5","#7A4CB5","#B5148A","#4C8E14","#14868E"];
@@ -885,6 +948,7 @@ function renderAll(){
   renderPeople();
   renderRecurring();
   renderAlertsButton();
+  renderPaymentForm();
   registerTripForUser();
   generateRecurring();
 }
@@ -943,7 +1007,7 @@ function renderHome(){
       const pending = pendingSettlementBetween(s.from, s.to);
       let action;
       if (pending) action = `<span class="status-tag pending">Pending</span>`;
-      else if (meId===s.from) action = `<button class="btn-settle" data-from="${s.from}" data-to="${s.to}" data-amt="${s.amount}">Mark paid</button>`;
+      else if (meId===s.from) action = `<span style="display:flex; gap:8px; align-items:center;"><button type="button" class="link-btn btn-howpay" data-to="${s.to}" data-amt="${s.amount}">How to pay</button><button class="btn-settle" data-from="${s.from}" data-to="${s.to}" data-amt="${s.amount}">Mark paid</button></span>`;
       else action = `<span class="empty-note" style="padding:0; font-size:12px;">Waiting on ${escapeHtml(nameOf(s.from))}</span>`;
       return `
       <div class="settle-row">
@@ -961,6 +1025,9 @@ function renderHome(){
         ${action}
       </div>
     `;}).join("");
+    settleCard.querySelectorAll(".btn-howpay").forEach(btn=>{
+      btn.addEventListener("click", ()=> openPay(btn.dataset.to, parseFloat(btn.dataset.amt)));
+    });
     settleCard.querySelectorAll(".btn-settle").forEach(btn=>{
       btn.addEventListener("click", async ()=>{
         const from = btn.dataset.from, to = btn.dataset.to, amt = parseFloat(btn.dataset.amt);
@@ -1081,8 +1148,13 @@ function renderAddForm(){
   splitWrap.dataset.rendered = "1";
   splitWrap.dataset.editingFor = editingExpenseId || "";
   splitWrap.querySelectorAll(".check-chip").forEach(chip=>{
-    chip.addEventListener("click", ()=>chip.classList.toggle("checked"));
+    chip.addEventListener("click", ()=>{ chip.classList.toggle("checked"); renderSplitInputs(); });
   });
+  if (editingExpense && isNewEditSession){
+    splitDefaults = editingExpense.shares ? {...editingExpense.shares} : {};
+    document.getElementById("f-splitmode").value = editingExpense.shares ? "exact" : "equal";
+  }
+  renderSplitInputs();
 
   document.getElementById("amountPrefix").textContent = currencySymbolGuess(tripSettings.currency);
 
@@ -1125,35 +1197,137 @@ function currencySymbolGuess(code){
 
 document.getElementById("splitAll").addEventListener("click", ()=>{
   document.querySelectorAll("#f-split .check-chip").forEach(c=>c.classList.add("checked"));
+  renderSplitInputs();
 });
 document.getElementById("splitNone").addEventListener("click", ()=>{
   document.querySelectorAll("#f-split .check-chip").forEach(c=>c.classList.remove("checked"));
+  renderSplitInputs();
 });
+
+/* ---------- unequal splits ---------- */
+let splitDefaults = {};
+function currentSplitInputs(){
+  const out = {};
+  document.querySelectorAll("#splitInputs input[data-id]").forEach(i=>{ out[i.dataset.id] = i.value === "" ? NaN : parseFloat(i.value); });
+  return out;
+}
+function selectedParticipantIds(){
+  return Array.from(document.querySelectorAll("#f-split .check-chip.checked")).map(c=>c.dataset.id);
+}
+function updateSplitHint(){
+  const mode = document.getElementById("f-splitmode").value;
+  const hint = document.getElementById("splitHint");
+  if (mode === "equal"){ hint.style.display = "none"; return; }
+  const amount = parseFloat(document.getElementById("f-amount").value);
+  const r = L.buildShares(mode, amount, selectedParticipantIds(), currentSplitInputs());
+  hint.style.display = "block";
+  hint.style.color = r.ok ? "var(--positive)" : "var(--ink-muted)";
+  hint.textContent = r.ok ? "Adds up. Ready to save." : r.error;
+}
+function renderSplitInputs(){
+  const mode = document.getElementById("f-splitmode").value;
+  const wrap = document.getElementById("splitInputs");
+  if (mode === "equal"){ wrap.style.display = "none"; wrap.innerHTML = ""; updateSplitHint(); return; }
+  const keep = currentSplitInputs();
+  const ids = selectedParticipantIds();
+  const unit = mode === "percent" ? "%" : mode === "shares" ? "parts" : currencySymbolGuess(tripSettings.currency);
+  wrap.style.display = "block";
+  wrap.innerHTML = ids.map(id=>{
+    const v = (id in keep && !Number.isNaN(keep[id])) ? keep[id] : (id in splitDefaults ? splitDefaults[id] : (mode === "shares" ? 1 : ""));
+    return `<div class="split-row"><span class="who">${escapeHtml(nameOf(id))}</span><input class="input" type="number" inputmode="decimal" step="0.01" min="0" data-id="${id}" value="${v}" placeholder="0" /><span style="font-size:12px; color:var(--ink-muted); width:34px;">${escapeHtml(unit)}</span></div>`;
+  }).join("") || `<div class="empty-note" style="padding:6px 0;">Pick who to split with above.</div>`;
+  wrap.querySelectorAll("input").forEach(i=>i.addEventListener("input", updateSplitHint));
+  updateSplitHint();
+}
+document.getElementById("f-splitmode").addEventListener("change", ()=>{ splitDefaults = {}; renderSplitInputs(); });
+document.getElementById("f-amount").addEventListener("input", updateSplitHint);
+
+/* ---------- receipt photos ---------- */
+// Stored as a small JPEG data URL in its own document (receipts/<expenseId>), so
+// the main ledger stays light and a receipt is only fetched when someone opens it.
+async function compressReceipt(file){
+  const bmp = await createImageBitmap(file);
+  for (const [maxSide, q] of [[1100, 0.62], [900, 0.5], [700, 0.45]]){
+    const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(bmp.width * scale));
+    c.height = Math.max(1, Math.round(bmp.height * scale));
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+    const url = c.toDataURL("image/jpeg", q);
+    if (url.length <= 380000) return url;
+  }
+  return null;
+}
+const receiptBackdrop = document.getElementById("receiptBackdrop");
+document.getElementById("receiptClose").addEventListener("click", ()=>receiptBackdrop.classList.remove("open"));
+receiptBackdrop.addEventListener("click", e=>{ if (e.target===receiptBackdrop) receiptBackdrop.classList.remove("open"); });
+async function openReceipt(expenseId){
+  try{
+    const snap = await getDoc(receiptDoc(expenseId));
+    if (!snap.exists()){ toast("No receipt found"); return; }
+    const exp = expenses.find(e=>e.id===expenseId);
+    document.getElementById("receiptSub").textContent = exp ? `${exp.description} · ${fmtMoney(exp.amount)}` : "";
+    document.getElementById("receiptImg").src = snap.data().data;
+    receiptBackdrop.classList.add("open");
+  }catch(err){ errorToast(err, "Couldn't open the receipt"); }
+}
+
+function resetAddForm(){
+  ["f-desc","f-amount"].forEach(id=>{ document.getElementById(id).value = ""; });
+  document.getElementById("f-category").value = "";
+  document.getElementById("f-repeat").value = "";
+  document.getElementById("f-receipt").value = "";
+  document.getElementById("f-splitmode").value = "equal";
+  splitDefaults = {};
+  renderSplitInputs();
+}
 
 document.getElementById("addForm").addEventListener("submit", async (e)=>{
   e.preventDefault();
   const desc = document.getElementById("f-desc").value.trim();
   const amount = parseFloat(document.getElementById("f-amount").value);
   const payerId = document.getElementById("f-payer").value;
-  const participantIds = Array.from(document.querySelectorAll("#f-split .check-chip.checked")).map(c=>c.dataset.id);
+  const chipIds = selectedParticipantIds();
   if (tripSettings.closed){ toast("This trip is closed. The owner can reopen it in People."); return; }
   if (!desc || !amount || amount<=0 || !payerId){ toast("Fill in all fields"); return; }
-  if (!participantIds.length){ toast("Pick at least one person to split with"); return; }
+  if (!chipIds.length){ toast("Pick at least one person to split with"); return; }
+
+  const mode = document.getElementById("f-splitmode").value;
+  let participantIds = chipIds, shares = null;
+  if (mode !== "equal"){
+    const r = L.buildShares(mode, amount, chipIds, currentSplitInputs());
+    if (!r.ok){ toast(r.error); return; }
+    shares = r.shares;
+    participantIds = Object.keys(shares);
+  }
   const category = document.getElementById("f-category").value;
   const repeat = document.getElementById("f-repeat").value;
+  const file = document.getElementById("f-receipt").files[0];
+  if (repeat && file){ toast("Receipts can't be attached to a repeating expense"); return; }
+
   const submitBtn = e.target.querySelector("button[type=submit]");
   const wasEditing = editingExpenseId;
   submitBtn.disabled = true; submitBtn.textContent = wasEditing ? "Saving…" : "Adding…";
   try{
+    let receipt = null;
+    if (file){
+      try{ receipt = await compressReceipt(file); }catch(err){ toast("Couldn't read that photo"); return; }
+      if (!receipt){ toast("That photo is too big even after shrinking"); return; }
+    }
+    const splitFields = shares ? {shares, splitMode: mode} : null;
+
     if (wasEditing){
-      await updateDoc(expenseDoc(wasEditing), {
+      const batch = writeBatch(db);
+      batch.update(expenseDoc(wasEditing), {
         description: desc, amount, payerId, participantIds, category,
+        shares: shares || null, splitMode: shares ? mode : "equal",
+        ...(receipt ? {hasReceipt: true} : {}),
         editedAt: Date.now(), editedBy: meId || payerId
       });
+      if (receipt) batch.set(receiptDoc(wasEditing), {data: receipt, by: meId, createdAt: Date.now()});
+      await batch.commit();
       editingExpenseId = null;
-      document.getElementById("f-desc").value = "";
-      document.getElementById("f-amount").value = "";
-      document.getElementById("f-category").value = "";
+      resetAddForm();
       saveToast("Expense updated");
       document.querySelector('.tab-btn[data-view="ledger"]').click();
     } else if (repeat){
@@ -1161,29 +1335,31 @@ document.getElementById("addForm").addEventListener("submit", async (e)=>{
       // template syncs, so there is no separate one-off expense here
       await addDoc(recurringCol(), {
         description: desc, amount, payerId, participantIds, category,
+        ...(splitFields || {}),
         interval: repeat, startDate: Date.now(), active: true,
         createdBy: meId || payerId, createdAt: Date.now()
       });
-      document.getElementById("f-desc").value = "";
-      document.getElementById("f-amount").value = "";
-      document.getElementById("f-category").value = "";
-      document.getElementById("f-repeat").value = "";
+      resetAddForm();
       saveToast("Repeating expense saved");
       document.querySelector('.tab-btn[data-view="home"]').click();
     } else {
-      await addDoc(expensesCol(), {
+      const ref = doc(expensesCol());
+      const batch = writeBatch(db);
+      batch.set(ref, {
         type: "expense",
         description: desc,
         amount,
         payerId,
         participantIds,
         category,
+        ...(splitFields || {}),
+        ...(receipt ? {hasReceipt: true} : {}),
         createdAt: Date.now(),
         addedBy: meId || payerId
       });
-      document.getElementById("f-desc").value = "";
-      document.getElementById("f-amount").value = "";
-      document.getElementById("f-category").value = "";
+      if (receipt) batch.set(receiptDoc(ref.id), {data: receipt, by: meId, createdAt: Date.now()});
+      await batch.commit();
+      resetAddForm();
       saveToast("Expense added");
       document.querySelector('.tab-btn[data-view="home"]').click();
     }
@@ -1225,7 +1401,8 @@ function ledgerItemHtml(e, isDeleted){
       </div>
       <div class="ledger-meta">${isSettlement
         ? `${escapeHtml(nameOf(e.payerId))} paid ${escapeHtml(participantNames)} · ${date}`
-        : `${escapeHtml(nameOf(e.payerId))} paid · split with ${escapeHtml(participantNames)} · ${date}`}</div>
+        : `${escapeHtml(nameOf(e.payerId))} paid · split ${e.shares ? "as " + Object.entries(e.shares).map(([id,a])=>escapeHtml(nameOf(id))+" "+fmtMoney(a)).join(", ") : "with " + escapeHtml(participantNames)} · ${date}`}</div>
+      ${e.hasReceipt ? `<button type="button" class="link-btn ledger-receipt" data-id="${e.id}">View receipt</button>` : ""}
       ${editedMeta}
       ${deletedMeta}
     </div>
@@ -1264,6 +1441,9 @@ function renderLedger(){
   card.querySelectorAll(".ledger-edit").forEach(btn=>{
     btn.addEventListener("click", ()=> enterEditMode(btn.dataset.id));
   });
+  card.querySelectorAll(".ledger-receipt").forEach(btn=>{
+    btn.addEventListener("click", ()=> openReceipt(btn.dataset.id));
+  });
   card.querySelectorAll(".ledger-del").forEach(btn=>{
     btn.addEventListener("click", async ()=>{
       if (!confirm("Delete this entry? It stays visible in the deleted log below, not erased.")) return;
@@ -1284,6 +1464,9 @@ function renderLedger(){
   toggle.textContent = showDeleted ? `Hide deleted (${deleted.length})` : `Show deleted (${deleted.length})`;
   deletedWrap.style.display = showDeleted ? "block" : "none";
   deletedWrap.innerHTML = deleted.map(e=>ledgerItemHtml(e,true)).join("");
+  deletedWrap.querySelectorAll(".ledger-receipt").forEach(btn=>{
+    btn.addEventListener("click", ()=> openReceipt(btn.dataset.id));
+  });
   deletedWrap.querySelectorAll(".ledger-restore").forEach(btn=>{
     btn.addEventListener("click", async ()=>{
       try{
@@ -1577,6 +1760,7 @@ async function generateRecurring(){
           tx.set(ref, {
             type: "expense", description: r.description, amount: r.amount,
             payerId: r.payerId, participantIds: r.participantIds, category: r.category || "",
+            ...(r.shares ? {shares: r.shares, splitMode: r.splitMode || "exact"} : {}),
             createdAt: o.dueMs, addedBy: r.createdBy, recurringId: r.id
           });
         });
@@ -1651,6 +1835,65 @@ document.getElementById("tripSwitcher").addEventListener("keydown", e=>{ if (e.k
 document.getElementById("tripsClose").addEventListener("click", ()=>tripsBackdrop.classList.remove("open"));
 tripsBackdrop.addEventListener("click", e=>{ if (e.target===tripsBackdrop) tripsBackdrop.classList.remove("open"); });
 
+/* ---------- payment details, "how to pay", WhatsApp ---------- */
+// Trip Split never moves money. It stores where each person wants to be paid
+// and helps you copy it and tell them on WhatsApp.
+function appLink(){ return location.origin + location.pathname + (TRIP_ID ? "?trip=" + encodeURIComponent(TRIP_ID) : ""); }
+function waShare(text){ window.open("https://wa.me/?text=" + encodeURIComponent(text), "_blank", "noopener"); }
+
+let payDirty = false;
+["pay-jazz","pay-easy","pay-bank","pay-note"].forEach(id=>{
+  document.getElementById(id).addEventListener("input", ()=>{ payDirty = true; });
+});
+function renderPaymentForm(){
+  if (payDirty || !meId) return;
+  const p = paymentInfo[meId] || {};
+  document.getElementById("pay-jazz").value = p.jazzcash || "";
+  document.getElementById("pay-easy").value = p.easypaisa || "";
+  document.getElementById("pay-bank").value = p.bank || "";
+  document.getElementById("pay-note").value = p.note || "";
+}
+document.getElementById("pay-save").addEventListener("click", async ()=>{
+  if (!meId){ toast("Link your name first"); return; }
+  try{
+    await setDoc(paymentDoc(meId), {
+      jazzcash: document.getElementById("pay-jazz").value.trim(),
+      easypaisa: document.getElementById("pay-easy").value.trim(),
+      bank: document.getElementById("pay-bank").value.trim(),
+      note: document.getElementById("pay-note").value.trim(),
+      by: meId, updatedAt: Date.now()
+    });
+    payDirty = false;
+    saveToast("Payment details saved");
+  }catch(e){ errorToast(e, "Couldn't save — check your connection"); }
+});
+
+const payBackdrop = document.getElementById("payBackdrop");
+let payContext = null;
+function openPay(toId, amount){
+  payContext = {toId, amount};
+  const p = paymentInfo[toId] || {};
+  const rows = [["JazzCash", p.jazzcash], ["Easypaisa", p.easypaisa], ["Raast ID / IBAN / account", p.bank], ["Note", p.note]].filter(r=>r[1]);
+  document.getElementById("payTitle").textContent = "Pay " + nameOf(toId);
+  document.getElementById("paySub").textContent = `${fmtMoney(amount)} owed. Send it in your bank or wallet app, then come back and tap Mark paid. Trip Split doesn't move money.`;
+  const list = document.getElementById("payList");
+  list.innerHTML = rows.length ? rows.map(([lab, val], i)=>`
+    <div class="pay-row"><div class="grow"><div class="lab">${escapeHtml(lab)}</div><div class="val">${escapeHtml(val)}</div></div>
+    ${lab === "Note" ? "" : `<button type="button" class="link-btn pay-copy" data-val="${escapeHtml(val)}">Copy</button>`}</div>`).join("")
+    : `<div class="empty-note">${escapeHtml(nameOf(toId))} hasn't added payment details yet. Ask them on WhatsApp.</div>`;
+  list.querySelectorAll(".pay-copy").forEach(b=>b.addEventListener("click", async ()=>{
+    toast((await copyText(b.dataset.val)) ? "Copied" : "Couldn't copy — select it manually");
+  }));
+  payBackdrop.classList.add("open");
+}
+document.getElementById("payClose").addEventListener("click", ()=>payBackdrop.classList.remove("open"));
+payBackdrop.addEventListener("click", e=>{ if (e.target===payBackdrop) payBackdrop.classList.remove("open"); });
+document.getElementById("payWhatsapp").addEventListener("click", ()=>{
+  if (!payContext) return;
+  waShare(`Hi ${nameOf(payContext.toId)}, I'm sending you ${fmtMoney(payContext.amount)} for ${tripSettings.name || "our trip"}. I'll mark it paid in Trip Split. Please confirm it there when it arrives: ${appLink()}`);
+});
+document.getElementById("p-sharewa").addEventListener("click", ()=> waShare(buildTextSummary() + "\n\n" + appLink()));
+
 /* ---------- boot ---------- */
 if (!needsSetup){
   boot();
@@ -1669,7 +1912,7 @@ async function boot(){
 
   window.collection = _collection; window.doc = _doc; window.addDoc = _addDoc;
   window.updateDoc = _updateDoc; window.setDoc = _setDoc; window.deleteDoc = _deleteDoc;
-  window.writeBatch = writeBatch; window.signOut = signOut; window.runTransaction = runTransaction;
+  window.writeBatch = writeBatch; window.signOut = signOut; window.runTransaction = runTransaction; window.getDoc = fsMod.getDoc;
 
   app = initializeApp(FIREBASE_CONFIG);
   auth = getAuth(app);
@@ -1787,6 +2030,11 @@ async function boot(){
       recurring = snap.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
       renderAll();
     }, ()=>{ recurring = []; });
+    _onSnapshot(paymentCol(), (snap)=>{
+      paymentInfo = {};
+      snap.docs.forEach(d=>{ paymentInfo[d.id] = d.data(); });
+      renderAll();
+    }, ()=>{ paymentInfo = {}; });
     _onSnapshot(userDoc(uid), (snap)=>{
       myTrips = (snap.exists() && snap.data().trips) || {};
     }, ()=>{ myTrips = {}; });

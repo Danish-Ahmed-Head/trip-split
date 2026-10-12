@@ -4,6 +4,7 @@ import {
   computeBalances, computeSettlements, pendingSettlementBetween, myPendingConfirmations,
   computePairwiseBalances, categoryTotals, matchesLedgerFilter,
   recurrenceOccurrences, nextOccurrenceMs, UNCATEGORISED,
+  expenseShares, buildShares,
 } from "../logic.js";
 
 const members = [{ id: "a" }, { id: "b" }, { id: "c" }];
@@ -174,4 +175,74 @@ test("nextOccurrenceMs returns the first future date", () => {
   const start = Date.UTC(2026, 0, 1);
   const rec = { id: "r", startDate: start, interval: "weekly" };
   assert.equal(nextOccurrenceMs(rec, start + 1), start + 7 * 86400000);
+});
+
+// ---- unequal splits ---------------------------------------------------------
+const sum = o => Object.values(o).reduce((a, b) => a + b, 0);
+
+test("expenseShares: legacy expenses split evenly, explicit shares win", () => {
+  close(expenseShares(exp({ amount: 90, payerId: "a" })).b, 30);
+  const e = exp({ amount: 100, payerId: "a", shares: { a: 70, b: 30 } });
+  assert.deepEqual(expenseShares(e), { a: 70, b: 30 });
+});
+
+test("unequal split moves balances by the stored shares", () => {
+  const e = exp({ amount: 100, payerId: "a", participantIds: ["a", "b"], shares: { a: 70, b: 30 } });
+  const net = computeBalances(members, [e]);
+  close(net.a, 30); close(net.b, -30); close(net.c, 0);
+});
+
+test("pairwise respects unequal shares from both sides", () => {
+  const e = exp({ amount: 100, payerId: "a", participantIds: ["a", "b", "c"], shares: { a: 20, b: 50, c: 30 }, description: "Hotel" });
+  close(computePairwiseBalances([e], "a").b.net, 50);
+  close(computePairwiseBalances([e], "a").c.net, 30);
+  close(computePairwiseBalances([e], "b").a.net, -50);
+  assert.equal(computePairwiseBalances([e], "b").c, undefined);
+});
+
+test("buildShares exact: must add up to the total", () => {
+  const ok = buildShares("exact", 100, ["a", "b"], { a: 60, b: 40 });
+  assert.ok(ok.ok); assert.deepEqual(ok.shares, { a: 60, b: 40 });
+  const bad = buildShares("exact", 100, ["a", "b"], { a: 60, b: 30 });
+  assert.equal(bad.ok, false); assert.match(bad.error, /add up to 90/);
+});
+
+test("buildShares percent: must be 100, sums exactly to the total", () => {
+  const r = buildShares("percent", 100, ["a", "b", "c"], { a: 33.33, b: 33.33, c: 33.34 });
+  assert.ok(r.ok); close(sum(r.shares), 100);
+  assert.equal(buildShares("percent", 100, ["a", "b"], { a: 60, b: 30 }).ok, false);
+});
+
+test("buildShares shares: proportional and rounding never loses a cent", () => {
+  const r = buildShares("shares", 100, ["a", "b", "c"], { a: 1, b: 1, c: 1 });
+  assert.ok(r.ok); close(sum(r.shares), 100);
+  const r2 = buildShares("shares", 10, ["a", "b"], { a: 2, b: 1 });
+  close(r2.shares.a, 6.67); close(r2.shares.b, 3.33); close(sum(r2.shares), 10);
+});
+
+test("buildShares: zero share means that person is left out", () => {
+  const r = buildShares("exact", 50, ["a", "b", "c"], { a: 50, b: 0, c: 0 });
+  assert.ok(r.ok); assert.deepEqual(Object.keys(r.shares), ["a"]);
+});
+
+test("buildShares: rejects bad input", () => {
+  assert.equal(buildShares("exact", 0, ["a"], { a: 0 }).ok, false);
+  assert.equal(buildShares("exact", 10, [], {}).ok, false);
+  assert.equal(buildShares("exact", 10, ["a"], { a: -5 }).ok, false);
+  assert.equal(buildShares("exact", 10, ["a"], { a: "x" }).ok, false);
+  assert.equal(buildShares("weird", 10, ["a"], { a: 10 }).ok, false);
+  assert.equal(buildShares("shares", 10, ["a", "b"], { a: 0, b: 0 }).ok, false);
+});
+
+test("buildShares equal: remainder cent is not lost", () => {
+  const r = buildShares("equal", 100, ["a", "b", "c"]);
+  assert.ok(r.ok); close(sum(r.shares), 100);
+});
+
+test("balances still sum to zero with mixed equal and unequal expenses", () => {
+  const net = computeBalances(members, [
+    exp({ amount: 100, payerId: "a" }),
+    exp({ amount: 250, payerId: "b", participantIds: ["a", "b", "c"], shares: { a: 100.5, b: 49.5, c: 100 } }),
+  ]);
+  close(sum(net), 0);
 });

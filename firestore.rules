@@ -138,6 +138,31 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /receipts/{expenseId} {
+      // trip members only; written once by the expense's author, in the same batch as the expense
+      allow read: if signedIn() && exists(/databases/$(database)/documents/memberLinks/$(request.auth.uid));
+      allow create, update: if signedIn()
+        && request.resource.data.keys().hasOnly(['data', 'by', 'createdAt'])
+        && request.resource.data.data is string && request.resource.data.data.size() < 400000
+        && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), request.resource.data.by)
+        && existsAfter(/databases/$(database)/documents/expenses/$(expenseId))
+        && getAfter(/databases/$(database)/documents/expenses/$(expenseId)).data.addedBy == request.resource.data.by;
+      allow delete: if false;
+    }
+
+    match /paymentInfo/{memberId} {
+      // where a member wants to be paid: visible to trip members, editable only by that member
+      allow read: if signedIn() && exists(/databases/$(database)/documents/memberLinks/$(request.auth.uid));
+      allow create, update: if signedIn()
+        && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), memberId)
+        && request.resource.data.keys().hasOnly(['jazzcash', 'easypaisa', 'bank', 'note', 'by', 'updatedAt'])
+        && request.resource.data.jazzcash is string && request.resource.data.jazzcash.size() <= 40
+        && request.resource.data.easypaisa is string && request.resource.data.easypaisa.size() <= 40
+        && request.resource.data.bank is string && request.resource.data.bank.size() <= 80
+        && request.resource.data.note is string && request.resource.data.note.size() <= 120;
+      allow delete: if false;
+    }
+
     match /settings/trip {
       allow read: if signedIn();
       allow create: if signedIn() && !exists(/databases/$(database)/documents/settings/trip);
@@ -229,6 +254,31 @@ service cloud.firestore {
           ||
           isOwnerOf(/databases/$(database)/documents/trips/$(tripId))
         );
+        allow delete: if false;
+      }
+
+      match /receipts/{expenseId} {
+        // trip members only; written once by the expense's author, in the same batch as the expense
+        allow read: if signedIn() && exists(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid));
+        allow create, update: if signedIn()
+          && request.resource.data.keys().hasOnly(['data', 'by', 'createdAt'])
+          && request.resource.data.data is string && request.resource.data.data.size() < 400000
+          && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), request.resource.data.by)
+          && existsAfter(/databases/$(database)/documents/trips/$(tripId)/expenses/$(expenseId))
+          && getAfter(/databases/$(database)/documents/trips/$(tripId)/expenses/$(expenseId)).data.addedBy == request.resource.data.by;
+        allow delete: if false;
+      }
+
+      match /paymentInfo/{memberId} {
+        // where a member wants to be paid: visible to trip members, editable only by that member
+        allow read: if signedIn() && exists(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid));
+        allow create, update: if signedIn()
+          && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), memberId)
+          && request.resource.data.keys().hasOnly(['jazzcash', 'easypaisa', 'bank', 'note', 'by', 'updatedAt'])
+          && request.resource.data.jazzcash is string && request.resource.data.jazzcash.size() <= 40
+          && request.resource.data.easypaisa is string && request.resource.data.easypaisa.size() <= 40
+          && request.resource.data.bank is string && request.resource.data.bank.size() <= 80
+          && request.resource.data.note is string && request.resource.data.note.size() <= 120;
         allow delete: if false;
       }
 
