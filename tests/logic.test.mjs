@@ -4,7 +4,7 @@ import {
   computeBalances, computeSettlements, pendingSettlementBetween, myPendingConfirmations,
   computePairwiseBalances, categoryTotals, matchesLedgerFilter,
   recurrenceOccurrences, nextOccurrenceMs, UNCATEGORISED,
-  expenseShares, buildShares,
+  expenseShares, buildShares, myStanding,
 } from "../logic.js";
 
 const members = [{ id: "a" }, { id: "b" }, { id: "c" }];
@@ -245,4 +245,22 @@ test("balances still sum to zero with mixed equal and unequal expenses", () => {
     exp({ amount: 250, payerId: "b", participantIds: ["a", "b", "c"], shares: { a: 100.5, b: 49.5, c: 100 } }),
   ]);
   close(sum(net), 0);
+});
+
+test("myStanding: found through the Google account link, owed vs owing", () => {
+  const linked = [
+    { id: "a", active: true, authUid: "uA" },
+    { id: "b", active: true, authUid: "uB" },
+  ];
+  const es = [exp({ amount: 100, payerId: "a", participantIds: ["a", "b"] })];
+  const a = myStanding(linked, es, "uA");
+  assert.equal(a.linked, true); assert.equal(a.memberId, "a"); close(a.net, 50);
+  const b = myStanding(linked, es, "uB");
+  close(b.net, -50);
+});
+
+test("myStanding: a person not linked in that trip is reported as not linked", () => {
+  const linked = [{ id: "a", active: true, authUid: "uA" }, { id: "b", active: false, authUid: "uB" }];
+  assert.deepEqual(myStanding(linked, [], "uZ"), { linked: false, memberId: null, net: 0 });
+  assert.equal(myStanding(linked, [], "uB").linked, false); // inactive member doesn't count
 });

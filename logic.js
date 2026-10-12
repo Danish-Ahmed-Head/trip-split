@@ -83,6 +83,15 @@ export function computeBalances(members, expenses) {
   return net;
 }
 
+// One signed-in person's standing in a trip, found through their Google account
+// link. net > 0 means the group owes them; net < 0 means they owe the group.
+export function myStanding(members, expenses, uid) {
+  const me = members.find(m => m.active && m.authUid === uid);
+  if (!me) return { linked: false, memberId: null, net: 0 };
+  const net = computeBalances(members, expenses)[me.id] || 0;
+  return { linked: true, memberId: me.id, net: cents(net) };
+}
+
 // Minimal set of payments that zero everyone out.
 export function computeSettlements(net) {
   const creditors = [], debtors = [];

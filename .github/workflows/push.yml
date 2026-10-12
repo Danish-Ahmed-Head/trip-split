@@ -1,0 +1,44 @@
+name: background-alerts
+
+# Free replacement for Cloud Functions: every few minutes this looks for new
+# "something happened" markers in Firestore and sends the matching alerts
+# through Firebase Cloud Messaging (free). GitHub may delay a scheduled run by
+# a few minutes, so alerts are near-real-time, not instant.
+#
+# Needs one repository secret: FIREBASE_SERVICE_ACCOUNT (service-account JSON).
+# Without it the job exits cleanly and does nothing.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print what would be sent without sending or marking events done"
+        type: boolean
+        default: false
+
+concurrency:
+  group: background-alerts
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    if: github.repository == 'Danish-Ahmed-Head/trip-split'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --omit=dev
+      - name: Send pending alerts
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: node scripts/send-push.mjs
