@@ -309,3 +309,86 @@ describe("created trips (nested paths)", () => {
     await assertSucceeds(setDoc(D(db, "trips", "t2", "members", "m1"), { name: "Zed", active: true, createdAt: 1 })); // no authUid field
   });
 });
+
+describe("receipts", () => {
+  const img = "data:image/jpeg;base64," + "A".repeat(500);
+  const exp = (id, over = {}) => ({ type: "expense", description: "Taxi", amount: 40, payerId: "mA", participantIds: ["mA"], createdAt: 1, addedBy: "mA", hasReceipt: true, ...over });
+
+  test("author attaches a receipt in the same batch as the expense", async () => {
+    await seed();
+    const db = as("ali");
+    const b = writeBatch(db);
+    b.set(D(db, "expenses", "r_ok"), exp("r_ok"));
+    b.set(D(db, "receipts", "r_ok"), { data: img, by: "mA", createdAt: 2 });
+    await assertSucceeds(b.commit());
+  });
+  test("a receipt can't be attached to someone else's expense", async () => {
+    await seed();
+    await assertFails(setDoc(D(as("bob"), "receipts", "e1"), { data: img, by: "mB", createdAt: 2 }));
+    await assertFails(setDoc(D(as("bob"), "receipts", "e1"), { data: img, by: "mA", createdAt: 2 })); // claiming to be alice
+  });
+  test("a receipt for an expense that doesn't exist is refused", async () => {
+    await seed();
+    await assertFails(setDoc(D(as("ali"), "receipts", "ghost"), { data: img, by: "mA", createdAt: 2 }));
+  });
+  test("oversized or malformed receipts are refused", async () => {
+    await seed();
+    await assertFails(setDoc(D(as("ali"), "receipts", "e1"), { data: "x".repeat(400001), by: "mA", createdAt: 2 }));
+    await assertFails(setDoc(D(as("ali"), "receipts", "e1"), { data: img, by: "mA", createdAt: 2, extra: 1 }));
+  });
+  test("only trip members can read receipts", async () => {
+    await seed();
+    await env.withSecurityRulesDisabled(async ctx => { await setDoc(D(ctx.firestore(), "receipts", "e1"), { data: img, by: "mA", createdAt: 2 }); });
+    await assertSucceeds(getDoc(D(as("bob"), "receipts", "e1")));
+    await assertFails(getDoc(D(as("eve"), "receipts", "e1")));
+  });
+});
+
+describe("payment details", () => {
+  const pay = (over = {}) => ({ jazzcash: "0300 1234567", easypaisa: "", bank: "PK00TEST0000000000000000", note: "Alice B", by: "mA", updatedAt: 1, ...over });
+  test("a member writes only their own payment details", async () => {
+    await seed();
+    await assertSucceeds(setDoc(D(as("ali"), "paymentInfo", "mA"), pay()));
+    await assertFails(setDoc(D(as("ali"), "paymentInfo", "mB"), pay()));
+    await assertFails(setDoc(D(as("eve"), "paymentInfo", "mA"), pay()));
+  });
+  test("only trip members can read them", async () => {
+    await seed();
+    await env.withSecurityRulesDisabled(async ctx => { await setDoc(D(ctx.firestore(), "paymentInfo", "mA"), pay()); });
+    await assertSucceeds(getDoc(D(as("bob"), "paymentInfo", "mA")));
+    await assertFails(getDoc(D(as("eve"), "paymentInfo", "mA")));
+    await assertFails(getDoc(D(anon(), "paymentInfo", "mA")));
+  });
+  test("unknown fields and oversized values are refused", async () => {
+    await seed();
+    await assertFails(setDoc(D(as("ali"), "paymentInfo", "mA"), pay({ password: "x" })));
+    await assertFails(setDoc(D(as("ali"), "paymentInfo", "mA"), pay({ bank: "9".repeat(81) })));
+  });
+  test("details can't be deleted by anyone, and nested trips behave the same", async () => {
+    await seed();
+    const { deleteDoc } = await import("firebase/firestore");
+    await env.withSecurityRulesDisabled(async ctx => {
+      const db = ctx.firestore();
+      await setDoc(D(db, "paymentInfo", "mA"), pay());
+      await setDoc(D(db, "trips", "t9"), { name: "T9", ownerUid: "own" });
+      await setDoc(D(db, "trips", "t9", "members", "m1"), { name: "Zed", active: true, authUid: "zed" });
+      await setDoc(D(db, "trips", "t9", "memberLinks", "zed"), { memberId: "m1" });
+    });
+    await assertFails(deleteDoc(D(as("ali"), "paymentInfo", "mA")));
+    await assertSucceeds(setDoc(D(as("zed"), "trips", "t9", "paymentInfo", "m1"), pay({ by: "m1" })));
+    await assertFails(setDoc(D(as("eve"), "trips", "t9", "paymentInfo", "m1"), pay({ by: "m1" })));
+  });
+});
+
+describe("unequal splits and templates carry through the rules", () => {
+  test("an expense with explicit shares is accepted, and a template can carry them", async () => {
+    await seed();
+    await assertSucceeds(setDoc(D(as("ali"), "expenses", "u1"), { type: "expense", description: "Hotel", amount: 100, payerId: "mA", participantIds: ["mA", "mB"], shares: { mA: 70, mB: 30 }, splitMode: "exact", createdAt: 1, addedBy: "mA" }));
+    await assertSucceeds(setDoc(D(as("ali"), "recurring", "r9"), { description: "Rent", amount: 100, payerId: "mA", participantIds: ["mA", "mB"], shares: { mA: 60, mB: 40 }, splitMode: "percent", interval: "monthly", startDate: 1, active: true, createdBy: "mA", createdAt: 1 }));
+  });
+  test("an author may change the split of their own expense", async () => {
+    await seed();
+    await assertSucceeds(updateDoc(D(as("ali"), "expenses", "e1"), { shares: { mA: 100, mB: 200 }, splitMode: "exact" }));
+    await assertFails(updateDoc(D(as("bob"), "expenses", "e1"), { shares: { mA: 0, mB: 300 } }));
+  });
+});

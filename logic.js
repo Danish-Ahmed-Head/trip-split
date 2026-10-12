@@ -7,6 +7,67 @@ export const UNCATEGORISED = "Uncategorised";
 const isLive = e => !e.deleted;
 const isSettlement = e => e.type === "settlement";
 
+const cents = n => Math.round(n * 100) / 100;
+
+// Who owes how much for one expense. Expenses saved with an explicit `shares`
+// map (exact amounts, percentages or shares) use it; everything else, including
+// every expense written before unequal splits existed, splits evenly.
+export function expenseShares(e) {
+  if (e.shares && typeof e.shares === "object" && Object.keys(e.shares).length) {
+    return { ...e.shares };
+  }
+  const ids = e.participantIds || [];
+  const out = {};
+  if (!ids.length) return out;
+  const each = e.amount / ids.length;
+  ids.forEach(id => { out[id] = (out[id] || 0) + each; });
+  return out;
+}
+
+export const SPLIT_MODES = ["equal", "exact", "percent", "shares"];
+
+// Turn what the person typed into per-member amounts that add up to `total`.
+// inputs: { memberId: number } for exact (amounts), percent (percentages) or
+// shares (parts). Returns { ok, shares, error }. Rounded to cents; any rounding
+// remainder goes to the largest share so the parts always sum to the total.
+export function buildShares(mode, total, ids, inputs = {}) {
+  const fail = error => ({ ok: false, shares: null, error });
+  if (!(total > 0)) return fail("Enter an amount first");
+  if (!ids.length) return fail("Pick at least one person to split with");
+  if (mode === "equal") {
+    const base = Math.floor((total * 100) / ids.length) / 100;
+    const shares = {};
+    ids.forEach(id => { shares[id] = base; });
+    shares[ids[0]] = cents(shares[ids[0]] + (total - base * ids.length));
+    return { ok: true, shares, error: null };
+  }
+  const vals = ids.map(id => Number(inputs[id]));
+  if (vals.some(v => !Number.isFinite(v) || v < 0)) return fail("Every number must be zero or more");
+  const sum = vals.reduce((a, b) => a + b, 0);
+  if (!(sum > 0)) return fail("Enter at least one amount above zero");
+  let amounts;
+  if (mode === "exact") {
+    if (Math.abs(sum - total) > 0.005) return fail(`Amounts add up to ${cents(sum)}, but the total is ${cents(total)}`);
+    amounts = vals.map(cents);
+  } else if (mode === "percent") {
+    if (Math.abs(sum - 100) > 0.01) return fail(`Percentages add up to ${cents(sum)}, not 100`);
+    amounts = vals.map(v => cents((v / 100) * total));
+  } else if (mode === "shares") {
+    amounts = vals.map(v => cents((v / sum) * total));
+  } else {
+    return fail("Unknown split type");
+  }
+  const diff = cents(total - amounts.reduce((a, b) => a + b, 0));
+  if (diff !== 0) {
+    let k = 0;
+    amounts.forEach((a, i) => { if (a > amounts[k]) k = i; });
+    amounts[k] = cents(amounts[k] + diff);
+  }
+  const shares = {};
+  ids.forEach((id, i) => { if (amounts[i] > 0) shares[id] = amounts[i]; });
+  return { ok: true, shares, error: null };
+}
+
 // Net balance per member. A settlement only counts once the creditor confirmed it.
 export function computeBalances(members, expenses) {
   const net = {};
@@ -14,14 +75,10 @@ export function computeBalances(members, expenses) {
   expenses.filter(e => isLive(e) && (!isSettlement(e) || e.confirmedBy)).forEach(e => {
     if (!(e.payerId in net)) net[e.payerId] = 0;
     net[e.payerId] += e.amount;
-    const ids = e.participantIds || [];
-    if (ids.length) {
-      const share = e.amount / ids.length;
-      ids.forEach(pid => {
-        if (!(pid in net)) net[pid] = 0;
-        net[pid] -= share;
-      });
-    }
+    Object.entries(expenseShares(e)).forEach(([pid, share]) => {
+      if (!(pid in net)) net[pid] = 0;
+      net[pid] -= share;
+    });
   });
   return net;
 }
@@ -74,13 +131,14 @@ export function computePairwiseBalances(expenses, forId) {
       if (forId === creditor) bump(debtor, -e.amount, { desc: "Settlement received", amount: -e.amount, date: e.confirmedAt || e.createdAt });
       else if (forId === debtor) bump(creditor, +e.amount, { desc: "Settlement paid", amount: +e.amount, date: e.confirmedAt || e.createdAt });
     } else {
-      const ids = e.participantIds || [];
-      if (!ids.length) return;
-      const share = e.amount / ids.length;
+      const shares = expenseShares(e);
+      if (!Object.keys(shares).length) return;
       if (forId === e.payerId) {
-        ids.forEach(pid => { if (pid !== forId) bump(pid, +share, { desc: e.description, amount: share, date: e.createdAt }); });
-      } else if (ids.includes(forId)) {
-        bump(e.payerId, -share, { desc: e.description, amount: -share, date: e.createdAt });
+        Object.entries(shares).forEach(([pid, share]) => {
+          if (pid !== forId) bump(pid, +share, { desc: e.description, amount: share, date: e.createdAt });
+        });
+      } else if (forId in shares) {
+        bump(e.payerId, -shares[forId], { desc: e.description, amount: -shares[forId], date: e.createdAt });
       }
     }
   });
