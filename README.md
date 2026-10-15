@@ -6,10 +6,10 @@ A shared-expense tracker for a group — split costs, see who owes who, and sett
 
 ## What it does
 
-- Add expenses and split them evenly across whoever was there
+- Add expenses and split them across whoever was there (evenly or unequally, see below)
 - See a live, auto-simplified "settle up" plan (minimum number of payments to zero everyone out)
 - A private **Balance Sheet** per person — itemized Assets (who owes you, how much, for what) and Liabilities (what you owe, to whom, for what)
-- **Two-step settlements**: the payer marks "I paid," and only the person who was actually paid can confirm it — no one can clear a debt on someone else's behalf
+- **Two-step settlements**: the payer marks "I paid," and only the person who was actually paid can confirm or dispute it. Nobody else can, not even the trip owner
 - Full audit trail: every add, edit, delete, and settlement confirmation records who and when
 - Categories on every expense, a spending-by-category breakdown on Home, and ledger search plus category and date-range filters
 - Repeating expenses (weekly or monthly): the next time anyone opens the app, due occurrences are added once each. There is no background scheduler, so nothing is added while nobody opens the app; it catches up on the next open.
@@ -18,16 +18,24 @@ A shared-expense tracker for a group — split costs, see who owes who, and sett
 - Receipt photos: attach a photo to an expense. It is shrunk to a small JPEG and kept in its own document, fetched only when opened; visible to trip members only.
 - Payment details and "How to pay": each member can save their JazzCash / Easypaisa number and Raast ID / IBAN. The person who owes sees them with Copy buttons on their settle-up row, then pays in their own banking or wallet app and taps Mark paid. Trip Split never moves money.
 - Share on WhatsApp: the trip summary, or a "I'm paying you" message from the How-to-pay sheet.
-- Alerts: a browser notification when someone adds an expense that involves you, marks a payment to you, or confirms or disputes yours. They work while the app is open; with closed-app alerts set up (below) they also arrive when it is closed, within a few minutes.
+- Alerts: a browser notification when someone adds an expense that involves you, marks a payment to you, or confirms or disputes yours. They work while the app is open; with closed-app alerts set up (below) they also arrive when it is closed, usually within about 5 to 10 minutes.
 - Trip switcher: tap the trip name to jump between every trip you've opened, with what you are owed or owe in each one
 - Installable: use "Add to Home Screen" / "Install" in your browser for an app-style launcher (web app manifest and icons; no offline page caching beyond what Firestore stores)
 - Multiple trips from one app, each with its own shareable link
-- Works offline — expenses added with no signal sync automatically once you're back online
+- Works offline: with no signal, a save is kept on the phone and syncs automatically once you're back online
 - Export the ledger as CSV or a text summary
 
 ## Who can do what
 
-Identity is tied to a real Google account (Google Sign-In), not just a name you tap. The first time you sign in, you link your account to your name in that trip — after that, only you can add expenses as yourself, only the person a settlement is addressed to can confirm or dispute it, and only the trip owner can edit trip settings or other people's entries. All of this is enforced server-side by [`firestore.rules`](firestore.rules), not just hidden in the UI.
+Trips are private and invite-only. Everything below is enforced server-side by [`firestore.rules`](firestore.rules), not just hidden in the UI.
+
+- **Joining.** The trip owner adds each person by name, then taps **Invite** and types that person's Gmail. Only that Google account can link to that name. Anyone else who opens the link sees "You're not on this trip yet" and can read nothing.
+- **Members** add expenses as themselves, edit or delete their own entries, rename themselves, and save their own payment details.
+- **Settlements.** Only the payer can mark a payment, always to one other person. Only the person paid can confirm or dispute it.
+- **The owner** adds and renames people, invites and unlinks Google accounts, edits or deletes any expense, withdraws unconfirmed settlements, and changes trip settings. The owner cannot confirm or dispute a payment for someone else.
+- **Unlinking** takes effect at once: a removed account's old link stops working.
+
+What the owner can still do, by design: they decide which Gmail is invited to which name, so a group has to trust its owner with that.
 
 ## Tech stack
 
@@ -45,22 +53,31 @@ Runs entirely on Firebase's free Spark plan. No backend server.
 Cloud Functions would need the paid Firebase plan, so a scheduled GitHub Actions job does the sending instead:
 
 1. Whoever does something (adds an expense, marks paid, confirms, disputes) writes a small marker to `pushEvents`. It holds no text and no recipient.
-2. Every 5 minutes `.github/workflows/push.yml` runs `scripts/send-push.mjs`. For each new marker it reads the expense, works out who is involved and what to say (`push/plan.js`), and sends through Firebase Cloud Messaging, which is free.
+2. Every 5 minutes a free Cloudflare Worker (`cloudflare/dispatch-worker.js`) starts `.github/workflows/push.yml`, which runs `scripts/send-push.mjs`. GitHub's own scheduler is kept as an hourly backup only: on a quiet repo it ran this job just every 3 to 7 hours. For each new marker it reads the expense, works out who is involved and what to say (`push/plan.js`), and sends through Firebase Cloud Messaging, which is free.
 3. `firebase-messaging-sw.js` shows the notification. It caches nothing.
 
-One-time setup: add the repository secret `FIREBASE_SERVICE_ACCOUNT` (a service-account JSON from Firebase console, Project settings, Service accounts). Until it exists the job exits cleanly and does nothing. The public web-push key is already in `index.html`.
+One-time setup:
 
-Limits: GitHub may delay a scheduled run by a few minutes, so alerts are near-real-time rather than instant. GitHub pauses scheduled workflows on a public repo after 60 days with no repository activity. On iPhone the app must be added to the Home Screen first.
+1. Repository secret `FIREBASE_SERVICE_ACCOUNT`: a service-account JSON from Firebase console, Project settings, Service accounts. Until it exists the job exits cleanly and does nothing.
+2. The Cloudflare Worker: paste `cloudflare/dispatch-worker.js` into a new Worker (free plan), add a secret `GH_TOKEN` (a fine-grained GitHub token for this repo only, "Actions: Read and write"), and a cron trigger `*/5 * * * *`.
+
+The public web-push key is already in `index.html`.
+
+Limits:
+- Alerts take up to about 5 to 10 minutes; without the Worker, hours.
+- GitHub pauses its own scheduled workflows on a public repo after 60 days with no activity. The Worker isn't affected.
+- On iPhone the app must be added to the Home Screen first.
+- The job retries a failing alert up to 5 times, then gives up and logs why.
 
 ## Tests
 
 ```bash
 npm install
 npm test            # unit tests: balances, splits, settle-up, filters, recurrence, alert planning (no Java needed)
-npm run test:rules  # Security Rules tests and a full alert-job sweep against the Firestore emulator (needs Java 11+)
+npm run test:rules  # Security Rules attack tests and a full alert-job sweep against the Firestore emulator (needs Java 21)
 ```
 
-Both run on every push in GitHub Actions (`.github/workflows/test.yml`). `logic.js` holds the pure logic so it can be tested outside the browser; `index.html` imports it.
+Both run in GitHub Actions on every push to `main` and on every pull request (`.github/workflows/test.yml`). `logic.js` holds the pure logic so it can be tested outside the browser; `index.html` imports it.
 
 ## Local development
 
@@ -97,12 +114,14 @@ Ask whoever's maintaining this for the current links, or check the session histo
 
 ## Project status
 
-Phase 1 (real auth, authorization, two-step settlements, balance sheet) is live and verified with one real account. Not yet verified: a second real account going through sign-in → claim → confirm, and the negative-case authorization checks (can someone confirm a settlement that isn't theirs, edit someone else's expense, etc.) against a second identity. See the Test Plan tab for the open items.
+Phase 1 (real auth, authorization, two-step settlements, balance sheet) is live. A second Google account was tested live on 2026-10-12 (claim, refused forgeries, own payment details).
 
 Phase 2 shipped 2026-10-10: categories, filters, repeating expenses, in-app alerts, trip switcher, installable manifest, server-enforced closed trips, and automated tests.
 
 Phase 3 shipped 2026-10-12: unequal splits, receipt photos, payment details with a How-to-pay helper, and WhatsApp sharing.
 
 Phase 4 (2026-10-12): per-trip balances in the trip switcher, and closed-app alerts through Firebase Cloud Messaging sent by a scheduled GitHub job, so it stays on free tiers.
+
+Security fixes (2026-10-15): an audit found that any Google account could read every trip, claim an unclaimed name, plant script through record ids, and create fake debts. Fixed by invite-only trips, rules that check both sides of every link, settlements limited to one other person, plausibility checks on split shares, and escaping every id in the page. The owner can no longer confirm payments for others.
 
 Deliberately not built: real payment-rail integration (JazzCash/Easypaisa/Raast APIs need merchant onboarding, fees and a server, so the app stores payment details and guides the payer instead).

@@ -1,0 +1,24 @@
+name: one-off-audit
+# Temporary, read-only. Runs once on the security-fixes branch, then is deleted.
+on:
+  push:
+    branches: [security-fixes]
+    paths: [scripts/audit-trip.mjs, .github/workflows/audit.yml]
+permissions:
+  contents: read
+jobs:
+  audit:
+    if: github.repository == 'Danish-Ahmed-Head/trip-split'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --omit=dev
+      - name: Audit (counts only)
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: node scripts/audit-trip.mjs
