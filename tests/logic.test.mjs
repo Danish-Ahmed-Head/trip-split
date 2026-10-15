@@ -264,3 +264,36 @@ test("myStanding: a person not linked in that trip is reported as not linked", (
   assert.deepEqual(myStanding(linked, [], "uZ"), { linked: false, memberId: null, net: 0 });
   assert.equal(myStanding(linked, [], "uB").linked, false); // inactive member doesn't count
 });
+
+test("shares that don't add up, include outsiders or negatives fall back to an even split", () => {
+  const bad = [
+    { shares: { a: 100000, b: -99999 } },          // negative, and far over the amount
+    { shares: { a: 30, b: 30 } },                   // adds up to 60, not 90
+    { shares: { a: 45, z: 45 } },                   // z isn't in the split
+    { shares: { a: "45", b: 45 } },                 // not a number
+  ];
+  for (const o of bad) {
+    const s = expenseShares(exp({ amount: 90, payerId: "a", participantIds: ["a", "b"], ...o }));
+    close(s.a, 45); close(s.b, 45);
+  }
+});
+
+test("a crafted expense can't push anyone's balance past the expense itself", () => {
+  const net = computeBalances(members, [exp({ amount: 1, payerId: "a", participantIds: ["a", "b"], shares: { b: 100000, a: -99999 } })]);
+  close(net.b, -0.5);
+  close(sum(net), 0);
+});
+
+test("non-numeric or missing amounts are ignored instead of turning balances into NaN", () => {
+  const net = computeBalances(members, [exp({ amount: "abc", payerId: "a" }), exp({ amount: 30, payerId: "a" })]);
+  assert.ok(Object.values(net).every(Number.isFinite));
+  close(net.a, 20);
+});
+
+test("a weekly repeat keeps producing occurrences after 60 weeks", () => {
+  const start = Date.UTC(2025, 0, 1);
+  const now = start + 100 * 7 * 86400000;
+  const occ = recurrenceOccurrences({ id: "r", startDate: start, interval: "weekly" }, now);
+  assert.equal(occ.length, 60);
+  assert.equal(occ[occ.length - 1].dueMs, now);
+});

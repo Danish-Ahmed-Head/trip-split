@@ -1,5 +1,8 @@
 // Security Rules tests. Run with: npm run test:rules
 // Needs Java (for the Firestore emulator) and `npm install`.
+//
+// Every test names the attacker. The point is to try what an outsider, an
+// invitee, an ordinary member and the owner could each get away with.
 import { test, before, after, beforeEach, describe } from "node:test";
 import fs from "node:fs";
 import path from "node:path";
@@ -8,7 +11,7 @@ import {
   initializeTestEnvironment, assertSucceeds, assertFails,
 } from "@firebase/rules-unit-testing";
 import {
-  doc, setDoc, getDoc, updateDoc, writeBatch, collection,
+  doc, setDoc, getDoc, getDocs, updateDoc, deleteDoc, writeBatch, collection,
 } from "firebase/firestore";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -25,432 +28,350 @@ after(async () => { await env.cleanup(); });
 beforeEach(async () => { await env.clearFirestore(); });
 
 // ---- world -----------------------------------------------------------------
-// uids: owner(own), alice(ali), bob(bob), eve(eve = signed in, not a member)
-// members: mA (alice), mB (bob), mC (unclaimed, legacy: no authUid field at all)
-async function seed({ closed = false } = {}) {
+// The same people exist in the default trip (base "") and in trip t1 (base "trips/t1/").
+//   own  owner, member mO          ali  member mA          bob  member mB
+//   cara invited as mC (unclaimed) eve  signed in, not in the trip
+const EMAIL = { own: "own@x.com", ali: "ali@x.com", bob: "bob@x.com", cara: "cara@x.com", eve: "eve@x.com" };
+const as = (uid, verified = true) => env.authenticatedContext(uid, { email: EMAIL[uid] || `${uid}@x.com`, email_verified: verified }).firestore();
+const anon = () => env.unauthenticatedContext().firestore();
+
+async function seed(base = "", { closed = false } = {}) {
   await env.withSecurityRulesDisabled(async ctx => {
     const db = ctx.firestore();
-    await setDoc(doc(db, "settings", "trip"), { name: "T", currency: "PKR", ownerUid: "own", ...(closed ? { closed: true } : {}) });
-    await setDoc(doc(db, "members", "mA"), { name: "Alice", active: true, authUid: "ali", createdAt: 1 });
-    await setDoc(doc(db, "members", "mB"), { name: "Bob", active: true, authUid: "bob", createdAt: 1 });
-    await setDoc(doc(db, "members", "mC"), { name: "Cara", active: true, createdAt: 1 }); // legacy shape
-    await setDoc(doc(db, "memberLinks", "ali"), { memberId: "mA" });
-    await setDoc(doc(db, "memberLinks", "bob"), { memberId: "mB" });
-    // a normal expense by Alice, a pending settlement Bob -> Alice, a legacy settlement (no confirmedBy field)
-    await setDoc(doc(db, "expenses", "e1"), { type: "expense", description: "Dinner", amount: 300, payerId: "mA", participantIds: ["mA", "mB"], createdAt: 5, addedBy: "mA" });
-    await setDoc(doc(db, "expenses", "s1"), { type: "settlement", amount: 100, payerId: "mB", participantIds: ["mA"], createdAt: 6, addedBy: "mB", confirmedBy: null, confirmedAt: null });
-    await setDoc(doc(db, "expenses", "sLegacy"), { type: "settlement", amount: 50, payerId: "mB", participantIds: ["mA"], createdAt: 2, addedBy: "mB" });
-    await setDoc(doc(db, "recurring", "r1"), { description: "Rent", amount: 900, payerId: "mA", participantIds: ["mA", "mB"], interval: "monthly", startDate: 1, active: true, createdBy: "mA", createdAt: 1 });
+    const p = rest => doc(db, base + rest);
+    await setDoc(base ? doc(db, base.slice(0, -1)) : doc(db, "settings/trip"),
+      { name: "T", currency: "PKR", ownerUid: "own", ...(closed ? { closed: true } : {}) });
+    await setDoc(p("members/mO"), { name: "Owner", active: true, authUid: "own", createdAt: 1 });
+    await setDoc(p("members/mA"), { name: "Alice", active: true, authUid: "ali", createdAt: 1 });
+    await setDoc(p("members/mB"), { name: "Bob", active: true, authUid: "bob", createdAt: 1 });
+    await setDoc(p("members/mC"), { name: "Cara", active: true, createdAt: 1 }); // old shape: no authUid field
+    await setDoc(p("memberLinks/own"), { memberId: "mO" });
+    await setDoc(p("memberLinks/ali"), { memberId: "mA" });
+    await setDoc(p("memberLinks/bob"), { memberId: "mB" });
+    await setDoc(p("invites/cara@x.com"), { memberId: "mC", by: "own", createdAt: 1 });
+    await setDoc(p("expenses/e1"), { type: "expense", description: "Dinner", amount: 300, payerId: "mA", participantIds: ["mA", "mB"], createdAt: 5, addedBy: "mA" });
+    await setDoc(p("expenses/s1"), { type: "settlement", description: "Settlement", amount: 100, payerId: "mB", participantIds: ["mA"], createdAt: 6, addedBy: "mB", confirmedBy: null, confirmedAt: null });
+    await setDoc(p("recurring/r1"), { description: "Rent", amount: 900, payerId: "mA", participantIds: ["mA", "mB"], interval: "monthly", startDate: 1, active: true, createdBy: "mA", createdAt: 1 });
+    await setDoc(p("receipts/e1"), { data: "data:image/jpeg;base64,AAAA", by: "mA", createdAt: 5 });
+    await setDoc(p("paymentInfo/mA"), { jazzcash: "0300", easypaisa: "", bank: "", note: "", by: "mA", updatedAt: 1 });
   });
 }
-const as = uid => env.authenticatedContext(uid).firestore();
-const anon = () => env.unauthenticatedContext().firestore();
-const D = (db, ...p) => doc(db, ...p);
 
-describe("sign-in required", () => {
-  test("anonymous (signed-out) users can't read or write", async () => {
-    await seed();
-    await assertFails(getDoc(D(anon(), "members", "mA")));
-    await assertFails(setDoc(D(anon(), "expenses", "x"), { type: "expense", amount: 5, addedBy: "mA", payerId: "mA", participantIds: ["mA"] }));
-  });
-  test("any signed-in user can read the trip", async () => {
-    await seed();
-    await assertSucceeds(getDoc(D(as("eve"), "expenses", "e1")));
-  });
-});
+const expense = (o = {}) => ({ type: "expense", description: "Taxi", amount: 50, payerId: "mA", participantIds: ["mA", "mB"], createdAt: 10, addedBy: "mA", ...o });
+const settlement = (o = {}) => ({ type: "settlement", description: "Settlement", amount: 40, payerId: "mB", participantIds: ["mA"], createdAt: 10, addedBy: "mB", confirmedBy: null, confirmedAt: null, ...o });
 
-describe("claiming a name", () => {
-  test("claim an unclaimed legacy member (field absent) + link in one batch", async () => {
-    await seed();
-    const db = as("eve");
-    const b = writeBatch(db);
-    b.update(D(db, "members", "mC"), { authUid: "eve" });
-    b.set(D(db, "memberLinks", "eve"), { memberId: "mC", claimedAt: 1 });
-    await assertSucceeds(b.commit());
-  });
-  test("can't claim a member that is already claimed", async () => {
-    await seed();
-    await assertFails(updateDoc(D(as("eve"), "members", "mA"), { authUid: "eve" }));
-  });
-  test("can't create a link to a member you did not claim (identity theft)", async () => {
-    await seed();
-    await assertFails(setDoc(D(as("eve"), "memberLinks", "eve"), { memberId: "mA" }));
-    await assertFails(setDoc(D(as("eve"), "memberLinks", "eve"), { memberId: "mC" })); // unclaimed, not yet claimed by eve
-  });
-  test("can't create a link under someone else's uid", async () => {
-    await seed();
-    await assertFails(setDoc(D(as("eve"), "memberLinks", "bob2"), { memberId: "mC" }));
-  });
-  test("a link can't be rewritten", async () => {
-    await seed();
-    await assertFails(setDoc(D(as("ali"), "memberLinks", "ali"), { memberId: "mB" }));
-  });
-  test("add yourself as a brand-new member and link in one batch", async () => {
-    await seed();
-    const db = as("eve");
-    const b = writeBatch(db);
-    b.set(D(db, "members", "mNew"), { name: "Eve", active: true, createdAt: 9, authUid: "eve" });
-    b.set(D(db, "memberLinks", "eve"), { memberId: "mNew" });
-    await assertSucceeds(b.commit());
-  });
-  test("a member can't reassign their own authUid", async () => {
-    await seed();
-    await assertFails(updateDoc(D(as("ali"), "members", "mA"), { authUid: "eve" }));
-  });
-  test("a member can rename themself, not someone else", async () => {
-    await seed();
-    await assertSucceeds(updateDoc(D(as("ali"), "members", "mA"), { name: "Alice B" }));
-    await assertFails(updateDoc(D(as("ali"), "members", "mB"), { name: "Hacked" }));
-  });
-});
+for (const base of ["", "trips/t1/"]) {
+  const label = base ? "nested trip" : "default trip";
+  const R = (db, rest) => doc(db, base + rest);
+  const C = (db, rest) => collection(db, base + rest);
 
-describe("expenses", () => {
-  test("add an expense as yourself", async () => {
-    await seed();
-    await assertSucceeds(setDoc(D(as("ali"), "expenses", "n1"), { type: "expense", description: "Tea", amount: 10, payerId: "mB", participantIds: ["mA", "mB"], createdAt: 1, addedBy: "mA" }));
-  });
-  test("can't add an expense in someone else's name", async () => {
-    await seed();
-    await assertFails(setDoc(D(as("ali"), "expenses", "n2"), { type: "expense", description: "Tea", amount: 10, payerId: "mA", participantIds: ["mA"], createdAt: 1, addedBy: "mB" }));
-  });
-  test("a signed-in non-member can't add expenses", async () => {
-    await seed();
-    await assertFails(setDoc(D(as("eve"), "expenses", "n3"), { type: "expense", description: "x", amount: 10, payerId: "mA", participantIds: ["mA"], createdAt: 1, addedBy: "mA" }));
-  });
-  test("amount must be a positive number", async () => {
-    await seed();
-    const base = { type: "expense", description: "x", payerId: "mA", participantIds: ["mA"], createdAt: 1, addedBy: "mA" };
-    await assertFails(setDoc(D(as("ali"), "expenses", "z0"), { ...base, amount: 0 }));
-    await assertFails(setDoc(D(as("ali"), "expenses", "zs"), { ...base, amount: "10" }));
-  });
-  test("author can edit and soft-delete; others can't", async () => {
-    await seed();
-    await assertSucceeds(updateDoc(D(as("ali"), "expenses", "e1"), { description: "Dinner!", amount: 320 }));
-    await assertSucceeds(updateDoc(D(as("ali"), "expenses", "e1"), { deleted: true, deletedBy: "mA", deletedAt: 9 }));
-    await assertFails(updateDoc(D(as("bob"), "expenses", "e1"), { amount: 1 }));
-    await assertFails(updateDoc(D(as("eve"), "expenses", "e1"), { deleted: true }));
-  });
-  test("author can't change authorship or inject settlement fields", async () => {
-    await seed();
-    await assertFails(updateDoc(D(as("ali"), "expenses", "e1"), { addedBy: "mB" }));
-    await assertFails(updateDoc(D(as("ali"), "expenses", "e1"), { confirmedBy: "mA" }));
-    await assertFails(updateDoc(D(as("ali"), "expenses", "e1"), { type: "settlement" }));
-  });
-  test("trip owner can edit anyone's expense", async () => {
-    await seed();
-    await assertSucceeds(updateDoc(D(as("own"), "expenses", "e1"), { amount: 301 }));
-  });
-  test("nobody can hard-delete", async () => {
-    await seed();
-    const { deleteDoc } = await import("firebase/firestore");
-    await assertFails(deleteDoc(D(as("ali"), "expenses", "e1")));
-    await assertFails(deleteDoc(D(as("own"), "expenses", "e1")));
-  });
-});
-
-describe("settlements: two-step confirmation", () => {
-  const settle = (over = {}) => ({ type: "settlement", description: "Settlement", amount: 100, payerId: "mB", participantIds: ["mA"], createdAt: 1, addedBy: "mB", confirmedBy: null, confirmedAt: null, ...over });
-
-  test("the payer can raise a settlement", async () => {
-    await seed();
-    await assertSucceeds(setDoc(D(as("bob"), "expenses", "s2"), settle()));
-  });
-  test("can't raise a settlement as someone else", async () => {
-    await seed();
-    await assertFails(setDoc(D(as("eve"), "expenses", "s3"), settle()));
-    await assertFails(setDoc(D(as("ali"), "expenses", "s4"), settle({ payerId: "mB", addedBy: "mA" })));
-  });
-  test("can't raise a pre-confirmed settlement", async () => {
-    await seed();
-    await assertFails(setDoc(D(as("bob"), "expenses", "s5"), settle({ confirmedBy: "mA", confirmedAt: 1 })));
-  });
-  test("only the creditor can confirm", async () => {
-    await seed();
-    await assertSucceeds(updateDoc(D(as("ali"), "expenses", "s1"), { confirmedBy: "mA", confirmedAt: 9 }));
-  });
-  test("the payer can't confirm their own payment", async () => {
-    await seed();
-    await assertFails(updateDoc(D(as("bob"), "expenses", "s1"), { confirmedBy: "mB", confirmedAt: 9 }));
-  });
-  test("a bystander can't confirm", async () => {
-    await seed();
-    await assertFails(updateDoc(D(as("eve"), "expenses", "s1"), { confirmedBy: "mA", confirmedAt: 9 }));
-  });
-  test("confirm works on legacy settlements that have no confirmedBy field", async () => {
-    await seed();
-    await assertSucceeds(updateDoc(D(as("ali"), "expenses", "sLegacy"), { confirmedBy: "mA", confirmedAt: 9 }));
-  });
-  test("creditor can dispute; payer can't", async () => {
-    await seed();
-    await assertSucceeds(updateDoc(D(as("ali"), "expenses", "s1"), { disputed: true, disputedBy: "mA", disputedAt: 9 }));
-    await assertFails(updateDoc(D(as("bob"), "expenses", "sLegacy"), { disputed: true, disputedBy: "mB", disputedAt: 9 }));
-  });
-  test("a confirmation can't be overwritten", async () => {
-    await seed();
-    await env.withSecurityRulesDisabled(async ctx => { await updateDoc(D(ctx.firestore(), "expenses", "s1"), { confirmedBy: "mA", confirmedAt: 7 }); });
-    await assertFails(updateDoc(D(as("ali"), "expenses", "s1"), { confirmedBy: "mA", confirmedAt: 99 }));
-  });
-  test("the payer can't edit the amount or recipient of a settlement", async () => {
-    await seed();
-    await assertFails(updateDoc(D(as("bob"), "expenses", "s1"), { amount: 1 }));
-    await assertFails(updateDoc(D(as("bob"), "expenses", "s1"), { participantIds: ["mB"] }));
-  });
-  test("the payer can withdraw a pending settlement but not a confirmed one", async () => {
-    await seed();
-    await assertSucceeds(updateDoc(D(as("bob"), "expenses", "s1"), { deleted: true, deletedBy: "mB", deletedAt: 9 }));
-    await env.withSecurityRulesDisabled(async ctx => { await updateDoc(D(ctx.firestore(), "expenses", "sLegacy"), { confirmedBy: "mA", confirmedAt: 7 }); });
-    await assertFails(updateDoc(D(as("bob"), "expenses", "sLegacy"), { deleted: true, deletedBy: "mB", deletedAt: 9 }));
-  });
-});
-
-describe("closed trip", () => {
-  test("a closed trip refuses new expenses and new repeating templates", async () => {
-    await seed({ closed: true });
-    await assertFails(setDoc(D(as("ali"), "expenses", "c1"), { type: "expense", description: "x", amount: 10, payerId: "mA", participantIds: ["mA"], createdAt: 1, addedBy: "mA" }));
-    await assertFails(setDoc(D(as("ali"), "recurring", "rc"), { description: "x", amount: 5, payerId: "mA", participantIds: ["mA"], interval: "weekly", startDate: 1, active: true, createdBy: "mA" }));
-  });
-  test("settling up still works on a closed trip", async () => {
-    await seed({ closed: true });
-    await assertSucceeds(setDoc(D(as("bob"), "expenses", "c2"), { type: "settlement", description: "Settlement", amount: 10, payerId: "mB", participantIds: ["mA"], createdAt: 1, addedBy: "mB", confirmedBy: null, confirmedAt: null }));
-    await assertSucceeds(updateDoc(D(as("ali"), "expenses", "s1"), { confirmedBy: "mA", confirmedAt: 9 }));
-  });
-  test("only the owner can close or reopen", async () => {
-    await seed();
-    await assertFails(updateDoc(D(as("ali"), "settings", "trip"), { closed: true }));
-    await assertSucceeds(updateDoc(D(as("own"), "settings", "trip"), { closed: true }));
-    await assertSucceeds(updateDoc(D(as("own"), "settings", "trip"), { closed: false }));
-  });
-  test("a trip with no closed field stays open", async () => {
-    await seed();
-    await assertSucceeds(setDoc(D(as("ali"), "expenses", "o1"), { type: "expense", description: "x", amount: 10, payerId: "mA", participantIds: ["mA"], createdAt: 1, addedBy: "mA" }));
-  });
-});
-
-describe("repeating expenses", () => {
-  const rec = (over = {}) => ({ description: "Gym", amount: 20, payerId: "mA", participantIds: ["mA", "mB"], interval: "weekly", startDate: 1, active: true, createdBy: "mA", createdAt: 1, ...over });
-  test("a member can create a template as themself", async () => {
-    await seed();
-    await assertSucceeds(setDoc(D(as("ali"), "recurring", "r2"), rec()));
-    await assertFails(setDoc(D(as("ali"), "recurring", "r3"), rec({ createdBy: "mB" })));
-    await assertFails(setDoc(D(as("ali"), "recurring", "r4"), rec({ interval: "daily" })));
-    await assertFails(setDoc(D(as("ali"), "recurring", "r5"), rec({ amount: -1 })));
-  });
-  test("only pause/resume, only by the creator or owner", async () => {
-    await seed();
-    await assertSucceeds(updateDoc(D(as("ali"), "recurring", "r1"), { active: false }));
-    await assertSucceeds(updateDoc(D(as("own"), "recurring", "r1"), { active: true }));
-    await assertFails(updateDoc(D(as("bob"), "recurring", "r1"), { active: false }));
-    await assertFails(updateDoc(D(as("ali"), "recurring", "r1"), { amount: 1 }));
-  });
-  test("any member's device may materialise an occurrence for the template's creator", async () => {
-    await seed();
-    await assertSucceeds(setDoc(D(as("bob"), "expenses", "rec_r1_20260101"), { type: "expense", description: "Rent", amount: 900, payerId: "mA", participantIds: ["mA", "mB"], createdAt: 1, addedBy: "mA", recurringId: "r1" }));
-  });
-  test("…but can't use a template to attribute an expense to someone else", async () => {
-    await seed();
-    // attributing it to a third member (not bob, not the template's creator) is refused
-    await assertFails(setDoc(D(as("bob"), "expenses", "rec_x"), { type: "expense", description: "Rent", amount: 900, payerId: "mA", participantIds: ["mA"], createdAt: 1, addedBy: "mC", recurringId: "r1" }));
-    await assertFails(setDoc(D(as("bob"), "expenses", "rec_y"), { type: "expense", description: "x", amount: 9, payerId: "mA", participantIds: ["mA"], createdAt: 1, addedBy: "mA", recurringId: "nope" }));
-  });
-});
-
-describe("trip settings and ownership", () => {
-  test("only the owner changes trip name/currency", async () => {
-    await seed();
-    await assertSucceeds(updateDoc(D(as("own"), "settings", "trip"), { name: "New" }));
-    await assertFails(updateDoc(D(as("ali"), "settings", "trip"), { name: "Mine" }));
-  });
-  test("ownership can be claimed once on a legacy trip with no owner, never taken", async () => {
-    await env.withSecurityRulesDisabled(async ctx => { await setDoc(D(ctx.firestore(), "settings", "trip"), { name: "Old", currency: "PKR" }); });
-    await assertSucceeds(updateDoc(D(as("ali"), "settings", "trip"), { ownerUid: "ali" }));
-    await assertFails(updateDoc(D(as("bob"), "settings", "trip"), { ownerUid: "bob" }));
-  });
-});
-
-describe("per-user data", () => {
-  test("a user reads and writes only their own users/ doc", async () => {
-    await seed();
-    await assertSucceeds(setDoc(D(as("ali"), "users", "ali"), { trips: { default: { name: "T", id: null, lastSeen: 1 } } }));
-    await assertSucceeds(getDoc(D(as("ali"), "users", "ali")));
-    await assertFails(getDoc(D(as("bob"), "users", "ali")));
-    await assertFails(setDoc(D(as("bob"), "users", "ali"), { trips: {} }));
-  });
-});
-
-describe("created trips (nested paths)", () => {
-  async function seedTrip({ closed = false } = {}) {
-    await env.withSecurityRulesDisabled(async ctx => {
-      const db = ctx.firestore();
-      await setDoc(D(db, "trips", "t1"), { name: "Hunza", currency: "PKR", ownerUid: "own", ...(closed ? { closed: true } : {}) });
-      await setDoc(D(db, "trips", "t1", "members", "mA"), { name: "Alice", active: true, authUid: "ali" });
-      await setDoc(D(db, "trips", "t1", "members", "mB"), { name: "Bob", active: true, authUid: "bob" });
-      await setDoc(D(db, "trips", "t1", "memberLinks", "ali"), { memberId: "mA" });
-      await setDoc(D(db, "trips", "t1", "memberLinks", "bob"), { memberId: "mB" });
-      await setDoc(D(db, "trips", "t1", "expenses", "s1"), { type: "settlement", amount: 100, payerId: "mB", participantIds: ["mA"], addedBy: "mB", createdAt: 1 });
+  describe(`${label}: reading`, () => {
+    test("signed-out visitors can't read anything", async () => {
+      await seed(base);
+      await assertFails(getDoc(R(anon(), "members/mA")));
+      await assertFails(getDoc(R(anon(), "expenses/e1")));
     });
-  }
-  test("same rules apply: creditor confirms, payer can't", async () => {
-    await seedTrip();
-    await assertFails(updateDoc(D(as("bob"), "trips", "t1", "expenses", "s1"), { confirmedBy: "mB", confirmedAt: 1 }));
-    await assertSucceeds(updateDoc(D(as("ali"), "trips", "t1", "expenses", "s1"), { confirmedBy: "mA", confirmedAt: 1 }));
+    test("an outsider (eve) can't read people, expenses, templates, receipts or payment details", async () => {
+      await seed(base);
+      const db = as("eve");
+      await assertFails(getDoc(R(db, "members/mA")));
+      await assertFails(getDocs(C(db, "members")));
+      await assertFails(getDoc(R(db, "expenses/e1")));
+      await assertFails(getDocs(C(db, "expenses")));
+      await assertFails(getDoc(R(db, "recurring/r1")));
+      await assertFails(getDoc(R(db, "receipts/e1")));
+      await assertFails(getDoc(R(db, "paymentInfo/mA")));
+    });
+    test("an outsider can see the trip doc (name only) but no one can list trips", async () => {
+      await seed(base);
+      await assertSucceeds(getDoc(base ? doc(as("eve"), "trips/t1") : doc(as("eve"), "settings/trip")));
+      await assertFails(getDocs(collection(as("ali"), "trips")));
+    });
+    test("members and the owner can read the trip", async () => {
+      await seed(base);
+      await assertSucceeds(getDocs(C(as("ali"), "expenses")));
+      await assertSucceeds(getDocs(C(as("own"), "members")));
+      await assertSucceeds(getDoc(R(as("bob"), "receipts/e1")));
+      await assertSucceeds(getDoc(R(as("bob"), "paymentInfo/mA")));
+    });
+    test("an invitee can read the people list before claiming, but not receipts or payment details", async () => {
+      await seed(base);
+      await assertSucceeds(getDocs(C(as("cara"), "members")));
+      await assertFails(getDoc(R(as("cara"), "receipts/e1")));
+      await assertFails(getDoc(R(as("cara"), "paymentInfo/mA")));
+    });
+    test("an invitee with an unverified email is treated as an outsider", async () => {
+      await seed(base);
+      await assertFails(getDocs(C(as("cara", false), "members")));
+    });
   });
-  test("link hijack is refused here too", async () => {
-    await seedTrip();
-    await assertFails(setDoc(D(as("eve"), "trips", "t1", "memberLinks", "eve"), { memberId: "mA" }));
-  });
-  test("closed trip refuses new expenses but not settlements", async () => {
-    await seedTrip({ closed: true });
-    await assertFails(setDoc(D(as("ali"), "trips", "t1", "expenses", "n"), { type: "expense", description: "x", amount: 5, payerId: "mA", participantIds: ["mA"], createdAt: 1, addedBy: "mA" }));
-    await assertSucceeds(setDoc(D(as("bob"), "trips", "t1", "expenses", "n2"), { type: "settlement", description: "Settlement", amount: 5, payerId: "mB", participantIds: ["mA"], createdAt: 1, addedBy: "mB", confirmedBy: null }));
-  });
-  test("a new trip can be created and its first members seeded by its creator", async () => {
-    const db = as("own");
-    await assertSucceeds(setDoc(D(db, "trips", "t2"), { name: "New", currency: "PKR", createdAt: 1, ownerUid: "own" }));
-    await assertSucceeds(setDoc(D(db, "trips", "t2", "members", "m1"), { name: "Zed", active: true, createdAt: 1 })); // no authUid field
-  });
-});
 
-describe("receipts", () => {
-  const img = "data:image/jpeg;base64," + "A".repeat(500);
-  const exp = (id, over = {}) => ({ type: "expense", description: "Taxi", amount: 40, payerId: "mA", participantIds: ["mA"], createdAt: 1, addedBy: "mA", hasReceipt: true, ...over });
+  describe(`${label}: joining`, () => {
+    const claim = (db, memberId, uid) => {
+      const batch = writeBatch(db);
+      batch.update(R(db, `members/${memberId}`), { authUid: uid });
+      batch.set(R(db, `memberLinks/${uid}`), { memberId, claimedAt: 1 });
+      return batch.commit();
+    };
+    test("the invited Google account claims its own name", async () => {
+      await seed(base);
+      await assertSucceeds(claim(as("cara"), "mC", "cara"));
+    });
+    test("an invitee can't claim someone else's name", async () => {
+      await seed(base);
+      await env.withSecurityRulesDisabled(async ctx => {
+        await setDoc(doc(ctx.firestore(), base + "members/mD"), { name: "Dan", active: true });
+      });
+      await assertFails(claim(as("cara"), "mD", "cara"));
+    });
+    test("an outsider can't claim an unclaimed name, add themself, or link themself", async () => {
+      await seed(base);
+      const db = as("eve");
+      await assertFails(claim(db, "mC", "eve"));
+      await assertFails(setDoc(R(db, "members/mE"), { name: "Eve", active: false, authUid: "eve", createdAt: 1 }));
+      await assertFails(setDoc(R(db, "memberLinks/eve"), { memberId: "mC" }));
+    });
+    test("only the owner can invite, and only to a real member, lowercase", async () => {
+      await seed(base);
+      await assertFails(setDoc(R(as("ali"), "invites/eve@x.com"), { memberId: "mC", by: "ali", createdAt: 1 }));
+      await assertSucceeds(setDoc(R(as("own"), "invites/eve@x.com"), { memberId: "mC", by: "own", createdAt: 1 }));
+      await assertFails(setDoc(R(as("own"), "invites/zed@x.com"), { memberId: "nope", by: "own", createdAt: 1 }));
+      await assertFails(setDoc(R(as("own"), "invites/Eve@X.com"), { memberId: "mC", by: "own", createdAt: 1 }));
+    });
+    test("an invitee can read their own invite, not anyone else's; only the owner lists them", async () => {
+      await seed(base);
+      await assertSucceeds(getDoc(R(as("cara"), "invites/cara@x.com")));
+      await assertFails(getDoc(R(as("eve"), "invites/cara@x.com")));
+      await assertFails(getDocs(C(as("ali"), "invites")));
+      await assertSucceeds(getDocs(C(as("own"), "invites")));
+    });
+    test("only the owner adds people, and never pre-linked to someone else", async () => {
+      await seed(base);
+      await assertFails(setDoc(R(as("ali"), "members/mN"), { name: "New", active: true, createdAt: 1 }));
+      await assertSucceeds(setDoc(R(as("own"), "members/mN"), { name: "New", active: true, createdAt: 1 }));
+      await assertFails(setDoc(R(as("own"), "members/mN2"), { name: "New", active: true, authUid: "eve", createdAt: 1 }));
+    });
+    test("member ids with markup are refused", async () => {
+      await seed(base);
+      await assertFails(setDoc(R(as("own"), 'members/x"><img src=x>'), { name: "X", active: true, createdAt: 1 }));
+    });
+  });
 
-  test("author attaches a receipt in the same batch as the expense", async () => {
-    await seed();
+  describe(`${label}: unlinking`, () => {
+    test("after the owner unlinks Bob, his old link no longer lets him act as Bob", async () => {
+      await seed(base);
+      await assertSucceeds(updateDoc(R(as("own"), "members/mB"), { authUid: null }));
+      await assertFails(setDoc(R(as("bob"), "expenses/x1"), expense({ payerId: "mB", addedBy: "mB" })));
+      await assertFails(updateDoc(R(as("bob"), "members/mB"), { name: "Bobby" }));
+    });
+    test("the owner can unlink but never link a name to another account", async () => {
+      await seed(base);
+      await assertFails(updateDoc(R(as("own"), "members/mC"), { authUid: "eve" }));
+    });
+    test("a member can't move their link onto someone else's name", async () => {
+      await seed(base);
+      await assertFails(setDoc(R(as("bob"), "memberLinks/bob"), { memberId: "mA" }));
+    });
+    test("people rename themselves; only the owner renames others", async () => {
+      await seed(base);
+      await assertSucceeds(updateDoc(R(as("bob"), "members/mB"), { name: "Bobby" }));
+      await assertFails(updateDoc(R(as("bob"), "members/mA"), { name: "Hacked" }));
+      await assertSucceeds(updateDoc(R(as("own"), "members/mA"), { name: "Alice K" }));
+      await assertFails(updateDoc(R(as("bob"), "members/mB"), { name: "x".repeat(41) }));
+    });
+  });
+
+  describe(`${label}: expenses`, () => {
+    test("a member adds an expense as themself, not as someone else; outsiders not at all", async () => {
+      await seed(base);
+      await assertSucceeds(setDoc(R(as("ali"), "expenses/x1"), expense()));
+      await assertFails(setDoc(R(as("bob"), "expenses/x2"), expense()));
+      await assertFails(setDoc(R(as("eve"), "expenses/x3"), expense()));
+    });
+    test("bad shapes are refused: unknown fields, odd shares, huge text, markup ids, fake payer", async () => {
+      await seed(base);
+      const db = as("ali");
+      await assertFails(setDoc(R(db, "expenses/x1"), expense({ hacked: true })));
+      await assertFails(setDoc(R(db, "expenses/x2"), expense({ shares: { mA: 10, mZ: 40 } })));
+      await assertFails(setDoc(R(db, "expenses/x3"), expense({ description: "x".repeat(201) })));
+      await assertFails(setDoc(R(db, 'expenses/a"><b'), expense()));
+      await assertFails(setDoc(R(db, "expenses/x4"), expense({ payerId: "ghost" })));
+      await assertFails(setDoc(R(db, "expenses/x5"), expense({ amount: -5 })));
+      await assertSucceeds(setDoc(R(db, "expenses/x6"), expense({ shares: { mA: 10, mB: 40 }, splitMode: "exact" })));
+    });
+    test("a closed trip refuses new expenses but still takes settlements", async () => {
+      await seed(base, { closed: true });
+      await assertFails(setDoc(R(as("ali"), "expenses/x1"), expense()));
+      await assertSucceeds(setDoc(R(as("bob"), "expenses/x2"), settlement()));
+    });
+    test("authors and the owner edit an expense; others can't; nobody rewrites authorship", async () => {
+      await seed(base);
+      await assertSucceeds(updateDoc(R(as("ali"), "expenses/e1"), { amount: 310 }));
+      await assertSucceeds(updateDoc(R(as("own"), "expenses/e1"), { description: "Dinner out" }));
+      await assertFails(updateDoc(R(as("bob"), "expenses/e1"), { amount: 1 }));
+      await assertFails(updateDoc(R(as("own"), "expenses/e1"), { addedBy: "mB" }));
+      await assertFails(updateDoc(R(as("ali"), "expenses/e1"), { shares: { mZ: 300 } }));
+    });
+  });
+
+  describe(`${label}: settlements`, () => {
+    test("the payer raises a settlement to one other person", async () => {
+      await seed(base);
+      await assertSucceeds(setDoc(R(as("bob"), "expenses/x1"), settlement()));
+    });
+    test("no fake debts: not to yourself, not to two people, not pre-confirmed, not for someone else", async () => {
+      await seed(base);
+      const db = as("bob");
+      await assertFails(setDoc(R(db, "expenses/x1"), settlement({ participantIds: ["mB"] })));
+      await assertFails(setDoc(R(db, "expenses/x2"), settlement({ participantIds: ["mB", "mA"] })));
+      await assertFails(setDoc(R(db, "expenses/x3"), settlement({ confirmedBy: "mA" })));
+      await assertFails(setDoc(R(db, "expenses/x4"), settlement({ payerId: "mA", addedBy: "mA" })));
+      await assertFails(setDoc(R(db, "expenses/x5"), settlement({ shares: { mA: 40 } })));
+      await assertFails(setDoc(R(db, "expenses/x6"), settlement({ participantIds: ["ghost"] })));
+    });
+    test("only the person paid confirms, and only as themself", async () => {
+      await seed(base);
+      await assertFails(updateDoc(R(as("bob"), "expenses/s1"), { confirmedBy: "mA", confirmedAt: 7 }));
+      await assertFails(updateDoc(R(as("own"), "expenses/s1"), { confirmedBy: "mA", confirmedAt: 7 }));
+      await assertFails(updateDoc(R(as("ali"), "expenses/s1"), { confirmedBy: "mB", confirmedAt: 7 }));
+      await assertFails(updateDoc(R(as("ali"), "expenses/s1"), { confirmedBy: "mA", confirmedAt: 7, amount: 1 }));
+      await assertSucceeds(updateDoc(R(as("ali"), "expenses/s1"), { confirmedBy: "mA", confirmedAt: 7 }));
+      await assertFails(updateDoc(R(as("ali"), "expenses/s1"), { confirmedBy: "mA", confirmedAt: 8 }));
+    });
+    test("only the person paid disputes; the owner can't", async () => {
+      await seed(base);
+      await assertFails(updateDoc(R(as("own"), "expenses/s1"), { disputed: true, disputedBy: "mA", disputedAt: 7 }));
+      await assertSucceeds(updateDoc(R(as("ali"), "expenses/s1"), { disputed: true, disputedBy: "mA", disputedAt: 7 }));
+    });
+    test("the payer or the owner withdraws a pending settlement; not once confirmed; not others", async () => {
+      await seed(base);
+      await assertFails(updateDoc(R(as("ali"), "expenses/s1"), { deleted: true, deletedBy: "mA", deletedAt: 7 }));
+      await assertSucceeds(updateDoc(R(as("bob"), "expenses/s1"), { deleted: true, deletedBy: "mB", deletedAt: 7 }));
+      await assertSucceeds(updateDoc(R(as("own"), "expenses/s1"), { deleted: false, deletedBy: null, deletedAt: null }));
+      await env.withSecurityRulesDisabled(async ctx => {
+        await updateDoc(doc(ctx.firestore(), base + "expenses/s1"), { confirmedBy: "mA" });
+      });
+      await assertFails(updateDoc(R(as("bob"), "expenses/s1"), { deleted: true, deletedBy: "mB", deletedAt: 8 }));
+    });
+  });
+
+  describe(`${label}: repeating expenses`, () => {
+    const occ = (o = {}) => expense({ description: "Rent", amount: 900, payerId: "mA", participantIds: ["mA", "mB"], addedBy: "mA", recurringId: "r1", ...o });
+    test("any member can add a due occurrence exactly as the template says", async () => {
+      await seed(base);
+      await assertSucceeds(setDoc(R(as("bob"), "expenses/rec_r1_20260101"), occ()));
+    });
+    test("an outsider can't use a template to write expenses", async () => {
+      await seed(base);
+      await assertFails(setDoc(R(as("eve"), "expenses/rec_r1_20260101"), occ()));
+    });
+    test("a member can't change the amount, payer, people or id pattern", async () => {
+      await seed(base);
+      const db = as("bob");
+      await assertFails(setDoc(R(db, "expenses/rec_r1_20260102"), occ({ amount: 9000 })));
+      await assertFails(setDoc(R(db, "expenses/rec_r1_20260103"), occ({ payerId: "mB" })));
+      await assertFails(setDoc(R(db, "expenses/rec_r1_20260104"), occ({ participantIds: ["mB"] })));
+      await assertFails(setDoc(R(db, "expenses/anything"), occ()));
+    });
+    test("templates: only by a member as themself; pause by creator or owner", async () => {
+      await seed(base);
+      const tmpl = { description: "Gym", amount: 100, payerId: "mB", participantIds: ["mB"], interval: "weekly", startDate: 1, active: true, createdBy: "mB", createdAt: 1 };
+      await assertSucceeds(setDoc(R(as("bob"), "recurring/r2"), tmpl));
+      await assertFails(setDoc(R(as("eve"), "recurring/r3"), { ...tmpl, createdBy: "mB" }));
+      await assertFails(updateDoc(R(as("bob"), "recurring/r1"), { active: false }));
+      await assertSucceeds(updateDoc(R(as("own"), "recurring/r1"), { active: false }));
+    });
+  });
+
+  describe(`${label}: receipts and payment details`, () => {
+    test("a receipt is a JPEG written by the expense's author", async () => {
+      await seed(base);
+      const r = { data: "data:image/jpeg;base64,AAAA", by: "mA", createdAt: 1 };
+      await assertSucceeds(setDoc(R(as("ali"), "receipts/e1"), r));
+      await assertFails(setDoc(R(as("bob"), "receipts/e1"), { ...r, by: "mB" }));
+      await assertFails(setDoc(R(as("ali"), "receipts/e1"), { ...r, data: "https://tracker.example/pixel.gif" }));
+    });
+    test("payment details: only your own", async () => {
+      await seed(base);
+      const p = { jazzcash: "0301", easypaisa: "", bank: "", note: "", by: "mB", updatedAt: 2 };
+      await assertSucceeds(setDoc(R(as("bob"), "paymentInfo/mB"), p));
+      await assertFails(setDoc(R(as("bob"), "paymentInfo/mA"), { ...p, by: "mB" }));
+      await assertFails(setDoc(R(as("own"), "paymentInfo/mA"), { ...p, by: "mO" }));
+    });
+  });
+
+  describe(`${label}: trip settings`, () => {
+    const tripRef = db => base ? doc(db, "trips/t1") : doc(db, "settings/trip");
+    test("only the owner changes name, currency or closed; nobody changes the owner", async () => {
+      await seed(base);
+      await assertFails(updateDoc(tripRef(as("ali")), { name: "Mine" }));
+      await assertFails(updateDoc(tripRef(as("eve")), { seeded: true }));
+      await assertSucceeds(updateDoc(tripRef(as("own")), { name: "Hunza", closed: true }));
+      await assertFails(updateDoc(tripRef(as("own")), { ownerUid: "ali" }));
+    });
+  });
+}
+
+describe("creating a trip", () => {
+  test("you can create a trip owned by yourself, not by someone else", async () => {
+    await assertSucceeds(setDoc(doc(as("ali"), "trips/new1"), { name: "Swat", currency: "PKR", ownerUid: "ali", createdAt: 1 }));
+    await assertFails(setDoc(doc(as("ali"), "trips/new2"), { name: "Swat", currency: "PKR", ownerUid: "bob", createdAt: 1 }));
+  });
+  test("the creator adds themself and the others in one go", async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), "trips/new1"), { name: "Swat", currency: "PKR", ownerUid: "ali", createdAt: 1 });
+    });
     const db = as("ali");
-    const b = writeBatch(db);
-    b.set(D(db, "expenses", "r_ok"), exp("r_ok"));
-    b.set(D(db, "receipts", "r_ok"), { data: img, by: "mA", createdAt: 2 });
-    await assertSucceeds(b.commit());
-  });
-  test("a receipt can't be attached to someone else's expense", async () => {
-    await seed();
-    await assertFails(setDoc(D(as("bob"), "receipts", "e1"), { data: img, by: "mB", createdAt: 2 }));
-    await assertFails(setDoc(D(as("bob"), "receipts", "e1"), { data: img, by: "mA", createdAt: 2 })); // claiming to be alice
-  });
-  test("a receipt for an expense that doesn't exist is refused", async () => {
-    await seed();
-    await assertFails(setDoc(D(as("ali"), "receipts", "ghost"), { data: img, by: "mA", createdAt: 2 }));
-  });
-  test("oversized or malformed receipts are refused", async () => {
-    await seed();
-    await assertFails(setDoc(D(as("ali"), "receipts", "e1"), { data: "x".repeat(400001), by: "mA", createdAt: 2 }));
-    await assertFails(setDoc(D(as("ali"), "receipts", "e1"), { data: img, by: "mA", createdAt: 2, extra: 1 }));
-  });
-  test("only trip members can read receipts", async () => {
-    await seed();
-    await env.withSecurityRulesDisabled(async ctx => { await setDoc(D(ctx.firestore(), "receipts", "e1"), { data: img, by: "mA", createdAt: 2 }); });
-    await assertSucceeds(getDoc(D(as("bob"), "receipts", "e1")));
-    await assertFails(getDoc(D(as("eve"), "receipts", "e1")));
+    const batch = writeBatch(db);
+    batch.set(doc(db, "trips/new1/members/m1"), { name: "Ali", active: true, authUid: "ali", createdAt: 1 });
+    batch.set(doc(db, "trips/new1/memberLinks/ali"), { memberId: "m1", claimedAt: 1 });
+    batch.set(doc(db, "trips/new1/members/m2"), { name: "Bob", active: true, createdAt: 1 });
+    await assertSucceeds(batch.commit());
   });
 });
 
-describe("payment details", () => {
-  const pay = (over = {}) => ({ jazzcash: "0300 1234567", easypaisa: "", bank: "PK00TEST0000000000000000", note: "Alice B", by: "mA", updatedAt: 1, ...over });
-  test("a member writes only their own payment details", async () => {
-    await seed();
-    await assertSucceeds(setDoc(D(as("ali"), "paymentInfo", "mA"), pay()));
-    await assertFails(setDoc(D(as("ali"), "paymentInfo", "mB"), pay()));
-    await assertFails(setDoc(D(as("eve"), "paymentInfo", "mA"), pay()));
-  });
-  test("only trip members can read them", async () => {
-    await seed();
-    await env.withSecurityRulesDisabled(async ctx => { await setDoc(D(ctx.firestore(), "paymentInfo", "mA"), pay()); });
-    await assertSucceeds(getDoc(D(as("bob"), "paymentInfo", "mA")));
-    await assertFails(getDoc(D(as("eve"), "paymentInfo", "mA")));
-    await assertFails(getDoc(D(anon(), "paymentInfo", "mA")));
-  });
-  test("unknown fields and oversized values are refused", async () => {
-    await seed();
-    await assertFails(setDoc(D(as("ali"), "paymentInfo", "mA"), pay({ password: "x" })));
-    await assertFails(setDoc(D(as("ali"), "paymentInfo", "mA"), pay({ bank: "9".repeat(81) })));
-  });
-  test("details can't be deleted by anyone, and nested trips behave the same", async () => {
-    await seed();
-    const { deleteDoc } = await import("firebase/firestore");
-    await env.withSecurityRulesDisabled(async ctx => {
-      const db = ctx.firestore();
-      await setDoc(D(db, "paymentInfo", "mA"), pay());
-      await setDoc(D(db, "trips", "t9"), { name: "T9", ownerUid: "own" });
-      await setDoc(D(db, "trips", "t9", "members", "m1"), { name: "Zed", active: true, authUid: "zed" });
-      await setDoc(D(db, "trips", "t9", "memberLinks", "zed"), { memberId: "m1" });
-    });
-    await assertFails(deleteDoc(D(as("ali"), "paymentInfo", "mA")));
-    await assertSucceeds(setDoc(D(as("zed"), "trips", "t9", "paymentInfo", "m1"), pay({ by: "m1" })));
-    await assertFails(setDoc(D(as("eve"), "trips", "t9", "paymentInfo", "m1"), pay({ by: "m1" })));
-  });
-});
-
-describe("unequal splits and templates carry through the rules", () => {
-  test("an expense with explicit shares is accepted, and a template can carry them", async () => {
-    await seed();
-    await assertSucceeds(setDoc(D(as("ali"), "expenses", "u1"), { type: "expense", description: "Hotel", amount: 100, payerId: "mA", participantIds: ["mA", "mB"], shares: { mA: 70, mB: 30 }, splitMode: "exact", createdAt: 1, addedBy: "mA" }));
-    await assertSucceeds(setDoc(D(as("ali"), "recurring", "r9"), { description: "Rent", amount: 100, payerId: "mA", participantIds: ["mA", "mB"], shares: { mA: 60, mB: 40 }, splitMode: "percent", interval: "monthly", startDate: 1, active: true, createdBy: "mA", createdAt: 1 }));
-  });
-  test("an author may change the split of their own expense", async () => {
-    await seed();
-    await assertSucceeds(updateDoc(D(as("ali"), "expenses", "e1"), { shares: { mA: 100, mB: 200 }, splitMode: "exact" }));
-    await assertFails(updateDoc(D(as("bob"), "expenses", "e1"), { shares: { mA: 0, mB: 300 } }));
-  });
-});
-
-// ---- background alerts: pushTokens + pushEvents ---------------------------
 describe("background alerts", () => {
-  const ev = (over = {}) => ({
-    tripKey: "default", expenseId: "e1", kind: "expense_added",
-    fromUid: "ali", processed: false, createdAt: 10, ...over,
-  });
-  const evId = (o = ev()) => `${o.tripKey}_${o.expenseId}_${o.kind}`;
+  const ev = (o = {}) => ({ tripKey: "default", expenseId: "e1", kind: "expense_added", fromUid: "ali", processed: false, createdAt: 10, ...o });
+  const evId = (o = ev()) => `${o.tripKey}_${o.expenseId}_${o.kind}_${o.fromUid}`;
 
-  test("a linked member can write an event for their own trip", async () => {
+  test("a linked member writes a marker for their own trip", async () => {
     await seed();
-    await assertSucceeds(setDoc(D(as("ali"), "pushEvents", evId()), ev()));
+    await assertSucceeds(setDoc(doc(as("ali"), "pushEvents", evId()), ev()));
   });
-  test("a signed-in non-member can't", async () => {
+  test("an outsider, a forged sender, a pre-processed or padded marker are refused", async () => {
     await seed();
-    await assertFails(setDoc(D(as("eve"), "pushEvents", evId(ev({ fromUid: "eve" }))), ev({ fromUid: "eve" })));
+    await assertFails(setDoc(doc(as("eve"), "pushEvents", evId(ev({ fromUid: "eve" }))), ev({ fromUid: "eve" })));
+    await assertFails(setDoc(doc(as("ali"), "pushEvents", evId(ev({ fromUid: "bob" }))), ev({ fromUid: "bob" })));
+    await assertFails(setDoc(doc(as("ali"), "pushEvents", evId()), ev({ processed: true })));
+    await assertFails(setDoc(doc(as("ali"), "pushEvents", evId()), ev({ createdAt: "x".repeat(5000) })));
+    await assertFails(setDoc(doc(as("ali"), "pushEvents", evId()), ev({ to: "bob" })));
   });
-  test("fromUid can't be forged", async () => {
+  test("the id must include the sender, so nobody can pre-empt someone else's marker", async () => {
     await seed();
-    await assertFails(setDoc(D(as("ali"), "pushEvents", evId()), ev({ fromUid: "bob" })));
+    await assertFails(setDoc(doc(as("ali"), "pushEvents", "default_e1_expense_added"), ev()));
+    const bobs = ev({ fromUid: "bob" });
+    await assertFails(setDoc(doc(as("ali"), "pushEvents", evId(bobs)), ev()));
   });
-  test("an event can't arrive already processed, or with extra fields", async () => {
+  test("markers are create-once and never readable", async () => {
     await seed();
-    await assertFails(setDoc(D(as("ali"), "pushEvents", evId()), ev({ processed: true })));
-    await assertFails(setDoc(D(as("ali"), "pushEvents", evId()), ev({ to: "bob" })));
-  });
-  test("the id must match trip, expense and kind; unknown kinds are refused", async () => {
-    await seed();
-    await assertFails(setDoc(D(as("ali"), "pushEvents", "whatever"), ev()));
-    const bad = ev({ kind: "free_money" });
-    await assertFails(setDoc(D(as("ali"), "pushEvents", evId(bad)), bad));
-  });
-  test("events are create-once: no overwrite, update, delete or read by clients", async () => {
-    await seed();
-    await assertSucceeds(setDoc(D(as("ali"), "pushEvents", evId()), ev()));
-    await assertFails(setDoc(D(as("ali"), "pushEvents", evId()), ev({ createdAt: 99 })));
-    await assertFails(updateDoc(D(as("ali"), "pushEvents", evId()), { processed: true }));
-    await assertFails(getDoc(D(as("ali"), "pushEvents", evId())));
+    await assertSucceeds(setDoc(doc(as("ali"), "pushEvents", evId()), ev()));
+    await assertFails(setDoc(doc(as("ali"), "pushEvents", evId()), ev({ createdAt: 99 })));
+    await assertFails(getDoc(doc(as("ali"), "pushEvents", evId())));
   });
   test("a nested trip needs a link in THAT trip", async () => {
-    await seed();
-    await env.withSecurityRulesDisabled(async ctx => {
-      await setDoc(doc(ctx.firestore(), "trips", "t1", "memberLinks", "bob"), { memberId: "x" });
-    });
+    await seed("trips/t1/");
     const o = ev({ tripKey: "t1", fromUid: "bob" });
-    await assertSucceeds(setDoc(D(as("bob"), "pushEvents", evId(o)), o));
-    const p = ev({ tripKey: "t1", fromUid: "ali" });
-    await assertFails(setDoc(D(as("ali"), "pushEvents", evId(p)), p));
+    await assertSucceeds(setDoc(doc(as("bob"), "pushEvents", evId(o)), o));
+    await env.withSecurityRulesDisabled(async ctx => {
+      await setDoc(doc(ctx.firestore(), "trips/t1/memberLinks/zed"), { memberId: "mA" }); // stale link, member not theirs
+    });
+    const z = ev({ tripKey: "t1", fromUid: "zed" });
+    await assertFails(setDoc(doc(as("zed"), "pushEvents", evId(z)), z));
   });
-
-  test("device tokens: only the owner can read or write them", async () => {
-    await assertSucceeds(setDoc(D(as("ali"), "pushTokens", "ali"), { tokens: ["t1"], updatedAt: 1 }));
-    await assertSucceeds(getDoc(D(as("ali"), "pushTokens", "ali")));
-    await assertFails(getDoc(D(as("bob"), "pushTokens", "ali")));
-    await assertFails(setDoc(D(as("bob"), "pushTokens", "ali"), { tokens: ["evil"], updatedAt: 1 }));
-  });
-  test("device tokens: shape is enforced", async () => {
-    await assertFails(setDoc(D(as("ali"), "pushTokens", "ali"), { tokens: "t1", updatedAt: 1 }));
-    await assertFails(setDoc(D(as("ali"), "pushTokens", "ali"), { tokens: Array(11).fill("t"), updatedAt: 1 }));
-    await assertFails(setDoc(D(as("ali"), "pushTokens", "ali"), { tokens: ["t"], updatedAt: 1, admin: true }));
+  test("device tokens: only the owner of the tokens, bounded", async () => {
+    await assertSucceeds(setDoc(doc(as("ali"), "pushTokens", "ali"), { tokens: ["t1"], updatedAt: 1 }));
+    await assertFails(getDoc(doc(as("bob"), "pushTokens", "ali")));
+    await assertFails(setDoc(doc(as("bob"), "pushTokens", "ali"), { tokens: ["evil"], updatedAt: 1 }));
+    await assertFails(setDoc(doc(as("ali"), "pushTokens", "ali"), { tokens: Array(11).fill("t"), updatedAt: 1 }));
   });
 });

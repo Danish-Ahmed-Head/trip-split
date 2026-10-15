@@ -2,16 +2,20 @@ rules_version = '2';
 
 // Trip Split: Firestore Security Rules
 //
-// Covers the default/legacy trip (flat paths: /members, /expenses, /recurring,
-// /settings/trip) and trips created via "Start a new trip" (nested under
-// /trips/{tripId}/...). Per-user data lives at /users/{uid}.
+// Two layouts share ONE set of checks:
+//   default trip: /members, /expenses, ... and /settings/trip     (base '',             trip doc 'settings/trip')
+//   other trips:  /trips/{t}/members, ...  and /trips/{t}         (base 'trips/{t}/',   trip doc 'trips/{t}')
+// Every allow below calls a function with (base, tripDoc), so the two can't drift.
 //
-// Identity: a signed-in user is linked to a trip member by a doc at
-// memberLinks/{uid} -> {memberId}. Rules can only look documents up by exact
-// path (no "find where authUid == uid"), so this index is what lets a rule ask
-// "which member is this Google account?". The link is only accepted when the
-// member doc itself already carries that uid (checked with getAfter so the
-// claim and the link can be written in one batch).
+// Who is who:
+//   - The owner (tripDoc.ownerUid) adds people and invites each one by Gmail
+//     (invites/{email} -> memberId). Only that Google account can claim that name.
+//   - memberLinks/{uid} -> memberId says which name a Google account acts as. It only
+//     counts while the member doc still carries the same uid, so the owner can unlink
+//     someone by clearing the member's authUid.
+//   - Only trip members (and invitees, so they can see their name) can read a trip.
+//   - The owner manages people, entries and settings, but can never confirm or
+//     dispute a payment on someone else's behalf.
 //
 // Tests: tests/rules.test.mjs (npm run test:rules, needs Java for the emulator).
 // Deploy: paste into Firebase Console -> Firestore Database -> Rules -> Publish,
@@ -20,318 +24,332 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function signedIn() {
-      return request.auth != null;
+    // ---------------- basics ----------------
+
+    function signedIn() { return request.auth != null; }
+
+    function D(rest) { return path('/databases/' + database + '/documents/' + rest); }
+
+    // document ids we accept: no '/', no quotes or markup
+    function safeId(id) { return id is string && id.matches('[A-Za-z0-9_-]{1,100}'); }
+
+    // absent fields (old documents) count as unset, same as null
+    function isUnset(data, field) { return !(field in data) || data[field] == null; }
+    function fieldIs(data, field, value) { return field in data && data[field] == value; }
+
+    function changedOnly(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function touches(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasAny(keys); }
+
+    function verifiedEmail() {
+      return ('email' in request.auth.token) && request.auth.token.get('email_verified', false) == true
+        ? request.auth.token.email.lower() : '~';
     }
 
-    // true when `memberId` is the member this signed-in user is linked to
-    function isMember(linksDocPath, memberId) {
-      return memberId != null
-        && exists(linksDocPath)
-        && get(linksDocPath).data.memberId == memberId;
+    // ---------------- trip membership ----------------
+
+    function linkDoc(b) { return D(b + 'memberLinks/' + request.auth.uid); }
+    function memberDoc(b, id) { return D(b + 'members/' + id); }
+    function myInvite(b) { return D(b + 'invites/' + verifiedEmail()); }
+
+    function isOwner(t) { return exists(D(t)) && get(D(t)).data.get('ownerUid', null) == request.auth.uid; }
+    function isOpen(t) { return !exists(D(t)) || get(D(t)).data.get('closed', false) != true; }
+
+    // the caller acts as member `id`: their link points there AND the member carries their uid
+    function actsAs(b, id) {
+      return safeId(id)
+        && exists(linkDoc(b)) && get(linkDoc(b)).data.memberId == id
+        && exists(memberDoc(b, id)) && get(memberDoc(b, id)).data.get('authUid', null) == request.auth.uid;
+    }
+    function isLinked(b) { return exists(linkDoc(b)) && actsAs(b, get(linkDoc(b)).data.memberId); }
+    function canRead(b, t) { return signedIn() && (isOwner(t) || isLinked(b) || exists(myInvite(b))); }
+
+    // ---------------- members ----------------
+
+    function validMember(d) {
+      return d.name is string && d.name.size() > 0 && d.name.size() <= 40
+        && d.get('active', true) is bool && d.keys().size() <= 8;
     }
 
-    // Fields such as authUid/confirmedBy/ownerUid are ABSENT (not null) on
-    // documents written before this model existed, so check absence too.
-    function isUnset(data, field) {
-      return !(field in data) || data[field] == null;
+    function memberCreate(b, t, id) {
+      let d = request.resource.data;
+      return safeId(id) && validMember(d) && isOwner(t)
+        && (isUnset(d, 'authUid') || (d.authUid == request.auth.uid && !exists(linkDoc(b))));
     }
 
-    // field exists AND equals value (a plain == on a missing field is an error)
-    function fieldIs(data, field, value) {
-      return field in data && data[field] == value;
-    }
-
-    function isOwnerOf(tripDocPath) {
-      return exists(tripDocPath) && fieldIs(get(tripDocPath).data, 'ownerUid', request.auth.uid);
-    }
-
-    // A closed trip takes no new expenses (settling up still works).
-    function isTripOpen(tripDocPath) {
-      return !exists(tripDocPath) || get(tripDocPath).data.get('closed', false) != true;
-    }
-
-    // ================= default / legacy trip (flat paths) =================
-
-    match /memberLinks/{uid} {
-      allow read: if signedIn();
-      // once, for yourself, and only for a member doc that already carries your uid
-      allow create: if signedIn() && request.auth.uid == uid
-        && !exists(/databases/$(database)/documents/memberLinks/$(uid))
-        && request.resource.data.memberId is string
-        && getAfter(/databases/$(database)/documents/members/$(request.resource.data.memberId)).data.authUid == request.auth.uid;
-      allow update, delete: if false;
-    }
-
-    match /members/{memberId} {
-      allow read: if signedIn();
-      allow create: if signedIn()
-        && (isUnset(request.resource.data, 'authUid') || fieldIs(request.resource.data, 'authUid', request.auth.uid));
-      allow update: if signedIn() && (
-        // claiming a still-unclaimed member: only authUid, only once
-        (fieldIs(request.resource.data, 'authUid', request.auth.uid) && isUnset(resource.data, 'authUid')
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authUid']))
-        ||
-        // the member themself edits name/active, never their own link
-        (fieldIs(resource.data, 'authUid', request.auth.uid)
-          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['authUid', 'createdAt']))
-        ||
-        isOwnerOf(/databases/$(database)/documents/settings/trip)
+    function memberUpdate(b, t, id) {
+      let d = request.resource.data;
+      let claiming = isUnset(resource.data, 'authUid') && fieldIs(d, 'authUid', request.auth.uid) && changedOnly(['authUid']);
+      return validMember(d) && (
+        // the invited Google account claims the name it was invited as
+        (claiming && exists(myInvite(b)) && get(myInvite(b)).data.memberId == id)
+        // the owner takes a name for themself, once, while they have none in this trip
+        || (claiming && isOwner(t) && !exists(linkDoc(b)))
+        // a person renames themself or leaves
+        || (actsAs(b, id) && changedOnly(['name', 'active']))
+        // the owner renames, (de)activates or unlinks (authUid back to null), never links someone
+        || (isOwner(t) && changedOnly(['name', 'active', 'authUid']) && (!touches(['authUid']) || isUnset(d, 'authUid')))
       );
+    }
+
+    function linkWrite(b, uid) {
+      let d = request.resource.data;
+      return request.auth.uid == uid && d.keys().hasOnly(['memberId', 'claimedAt']) && safeId(d.memberId)
+        && getAfter(memberDoc(b, d.memberId)).data.get('authUid', null) == request.auth.uid;
+    }
+
+    function inviteWrite(b, t, email) {
+      let d = request.resource.data;
+      return isOwner(t) && email == email.lower() && email.matches('[^@/ ]+@[^@/ ]+[.][^@/ ]+')
+        && d.keys().hasOnly(['memberId', 'by', 'createdAt'])
+        && safeId(d.memberId) && exists(memberDoc(b, d.memberId));
+    }
+
+    // ---------------- expenses ----------------
+
+    function knownExpenseKeys() {
+      return ['type', 'description', 'amount', 'payerId', 'participantIds', 'category', 'shares', 'splitMode',
+              'hasReceipt', 'createdAt', 'addedBy', 'recurringId', 'confirmedBy', 'confirmedAt',
+              'disputed', 'disputedBy', 'disputedAt', 'deleted', 'deletedBy', 'deletedAt', 'editedAt', 'editedBy'];
+    }
+
+    function validCore(d) {
+      return d.amount is number && d.amount > 0 && d.amount < 100000000
+        && safeId(d.payerId)
+        && d.participantIds is list && d.participantIds.size() >= 1 && d.participantIds.size() <= 50
+        && d.get('description', '') is string && d.get('description', '').size() <= 200
+        && d.get('category', '') is string && d.get('category', '').size() <= 40
+        && (d.get('shares', null) == null
+            || (d.shares is map && d.shares.size() <= 50 && d.shares.keys().hasOnly(d.participantIds)));
+    }
+
+    // an occurrence of a repeating expense, written by any linked member on app open
+    function recurringOk(b, id, d) {
+      return safeId(d.get('recurringId', ''))
+        && id.matches('rec_' + d.recurringId + '_[0-9]{8}')
+        && isLinked(b)
+        && exists(D(b + 'recurring/' + d.recurringId))
+        && get(D(b + 'recurring/' + d.recurringId)).data.createdBy == d.get('addedBy', '')
+        && get(D(b + 'recurring/' + d.recurringId)).data.amount == d.amount
+        && get(D(b + 'recurring/' + d.recurringId)).data.payerId == d.payerId
+        && get(D(b + 'recurring/' + d.recurringId)).data.participantIds == d.participantIds;
+    }
+
+    function expenseCreate(b, t, id) {
+      let d = request.resource.data;
+      return safeId(id) && validCore(d) && d.keys().hasOnly(knownExpenseKeys())
+        && d.get('createdAt', 0) is number
+        && isUnset(d, 'confirmedBy') && !('disputed' in d) && d.get('deleted', false) == false
+        && (
+          // a settlement: raised by the payer, to exactly one OTHER person, never pre-confirmed
+          (d.get('type', '') == 'settlement'
+            && actsAs(b, d.payerId) && d.get('addedBy', '') == d.payerId
+            && d.participantIds.size() == 1 && safeId(d.participantIds[0]) && d.participantIds[0] != d.payerId
+            && exists(memberDoc(b, d.participantIds[0]))
+            && d.get('shares', null) == null && !('recurringId' in d))
+          ||
+          // a normal expense: trip open, real payer, added by you (or a repeating template)
+          (d.get('type', '') == 'expense' && isOpen(t) && exists(memberDoc(b, d.payerId))
+            && ((!('recurringId' in d) && actsAs(b, d.get('addedBy', ''))) || recurringOk(b, id, d)))
+        );
+    }
+
+    function expenseUpdate(b, t) {
+      let d = request.resource.data;
+      let old = resource.data;
+      let isSettle = old.get('type', 'expense') == 'settlement';
+      let creditor = isSettle ? old.participantIds[0] : '';
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(knownExpenseKeys()) && (
+        // the person paid confirms or disputes, once; the owner can't do this for them
+        (isSettle && actsAs(b, creditor) && isUnset(old, 'confirmedBy') && old.get('deleted', false) != true
+          && ((changedOnly(['confirmedBy', 'confirmedAt']) && d.confirmedBy == creditor && d.confirmedAt is number)
+              || (changedOnly(['disputed', 'disputedBy', 'disputedAt']) && d.disputed == true && d.disputedBy == creditor)))
+        ||
+        // the author or the owner edits / soft-deletes a normal expense
+        (!isSettle && validCore(d)
+          && !touches(['addedBy', 'type', 'createdAt', 'confirmedBy', 'confirmedAt', 'disputed', 'disputedBy', 'disputedAt', 'recurringId'])
+          && (actsAs(b, old.get('addedBy', '')) || isOwner(t)))
+        ||
+        // the payer or the owner withdraws / restores a still-unconfirmed settlement
+        (isSettle && isUnset(old, 'confirmedBy') && changedOnly(['deleted', 'deletedBy', 'deletedAt'])
+          && (actsAs(b, old.payerId) || isOwner(t)))
+      );
+    }
+
+    function recurringCreate(b, t, id) {
+      let d = request.resource.data;
+      return safeId(id) && isOpen(t) && actsAs(b, d.get('createdBy', '')) && validCore(d)
+        && exists(memberDoc(b, d.payerId))
+        && d.interval in ['weekly', 'monthly'] && d.startDate is number && d.get('active', true) is bool
+        && d.keys().hasOnly(['description', 'amount', 'payerId', 'participantIds', 'category', 'shares', 'splitMode',
+                             'interval', 'startDate', 'active', 'createdBy', 'createdAt']);
+    }
+
+    function receiptWrite(b, t, id) {
+      let d = request.resource.data;
+      return safeId(id) && d.keys().hasOnly(['data', 'by', 'createdAt'])
+        && d.data is string && d.data.size() < 400000 && d.data.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+')
+        && actsAs(b, d.by)
+        && existsAfter(D(b + 'expenses/' + id))
+        && (getAfter(D(b + 'expenses/' + id)).data.get('addedBy', '') == d.by || isOwner(t));
+    }
+
+    function paymentWrite(b, id) {
+      let d = request.resource.data;
+      return actsAs(b, id)
+        && d.keys().hasOnly(['jazzcash', 'easypaisa', 'bank', 'note', 'by', 'updatedAt'])
+        && d.jazzcash is string && d.jazzcash.size() <= 40
+        && d.easypaisa is string && d.easypaisa.size() <= 40
+        && d.bank is string && d.bank.size() <= 80
+        && d.note is string && d.note.size() <= 120;
+    }
+
+    // ---------------- the trip document ----------------
+
+    function validTripValues(d) {
+      return d.get('name', '') is string && d.get('name', '').size() <= 60
+        && d.get('currency', 'PKR') is string && d.get('currency', 'PKR').size() <= 5
+        && d.get('closed', false) is bool;
+    }
+    function tripCreate() {
+      let d = request.resource.data;
+      return signedIn() && validTripValues(d) && fieldIs(d, 'ownerUid', request.auth.uid)
+        && d.keys().hasOnly(['name', 'currency', 'ownerUid', 'closed', 'seeded', 'createdAt']);
+    }
+    function tripUpdate(t) {
+      return signedIn() && isOwner(t) && validTripValues(request.resource.data)
+        && changedOnly(['name', 'currency', 'closed', 'seeded']);
+    }
+
+    // ---------------- one block per collection, used by both layouts ----------------
+    // (b = base path, t = trip doc path)
+
+    // default trip
+    match /settings/trip {
+      allow get: if signedIn();
+      allow create: if tripCreate();
+      allow update: if tripUpdate('settings/trip');
+    }
+    match /memberLinks/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || canRead('', 'settings/trip'));
+      allow create, update: if signedIn() && linkWrite('', uid);
+      allow delete: if signedIn() && (request.auth.uid == uid || isOwner('settings/trip'));
+    }
+    match /invites/{email} {
+      allow get: if signedIn() && (isOwner('settings/trip') || email == verifiedEmail());
+      allow list: if signedIn() && isOwner('settings/trip');
+      allow create, update: if signedIn() && inviteWrite('', 'settings/trip', email);
+      allow delete: if signedIn() && isOwner('settings/trip');
+    }
+    match /members/{memberId} {
+      allow read: if canRead('', 'settings/trip');
+      allow create: if signedIn() && memberCreate('', 'settings/trip', memberId);
+      allow update: if signedIn() && memberUpdate('', 'settings/trip', memberId);
       allow delete: if false; // soft-delete only (active:false)
     }
-
     match /expenses/{expenseId} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.amount is number && request.resource.data.amount > 0 && (
-        // a settlement can only be raised by the payer, and never pre-confirmed
-        (request.resource.data.type == 'settlement'
-          && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), request.resource.data.payerId)
-          && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), request.resource.data.addedBy)
-          && isUnset(request.resource.data, 'confirmedBy'))
-        ||
-        // a normal expense: trip open, authored by you (or by a repeating template you can vouch for)
-        (request.resource.data.type != 'settlement'
-          && isTripOpen(/databases/$(database)/documents/settings/trip)
-          && (isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), request.resource.data.addedBy)
-              || ('recurringId' in request.resource.data && request.resource.data.recurringId is string
-                  && exists(/databases/$(database)/documents/recurring/$(request.resource.data.recurringId))
-                  && get(/databases/$(database)/documents/recurring/$(request.resource.data.recurringId)).data.createdBy == request.resource.data.addedBy)))
-      );
-      allow update: if signedIn() && (
-        // the creditor confirming or disputing a pending settlement, once
-        (resource.data.type == 'settlement'
-          && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), resource.data.participantIds[0])
-          && isUnset(resource.data, 'confirmedBy')
-          && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['confirmedBy', 'confirmedAt', 'disputed', 'disputedBy', 'disputedAt']))
-        ||
-        // the author edits / soft-deletes a normal expense, never authorship or settlement fields
-        (resource.data.type != 'settlement'
-          && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), resource.data.addedBy)
-          && !request.resource.data.diff(resource.data).affectedKeys()
-               .hasAny(['addedBy', 'type', 'createdAt', 'confirmedBy', 'confirmedAt', 'disputed', 'disputedBy', 'disputedAt']))
-        ||
-        // the payer may withdraw their own still-pending settlement (soft delete/restore only)
-        (resource.data.type == 'settlement'
-          && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), resource.data.addedBy)
-          && isUnset(resource.data, 'confirmedBy')
-          && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['deleted', 'deletedBy', 'deletedAt']))
-        ||
-        isOwnerOf(/databases/$(database)/documents/settings/trip)
-      );
+      allow read: if canRead('', 'settings/trip');
+      allow create: if signedIn() && expenseCreate('', 'settings/trip', expenseId);
+      allow update: if signedIn() && expenseUpdate('', 'settings/trip');
       allow delete: if false;
     }
-
     match /recurring/{recId} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.amount is number && request.resource.data.amount > 0
-        && request.resource.data.interval in ['weekly', 'monthly']
-        && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), request.resource.data.createdBy)
-        && isTripOpen(/databases/$(database)/documents/settings/trip);
-      // pause / resume only, by whoever set it up or the owner
-      allow update: if signedIn()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active'])
-        && (isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), resource.data.createdBy)
-            || isOwnerOf(/databases/$(database)/documents/settings/trip));
+      allow read: if canRead('', 'settings/trip');
+      allow create: if signedIn() && recurringCreate('', 'settings/trip', recId);
+      allow update: if signedIn() && changedOnly(['active']) && request.resource.data.active is bool
+        && (actsAs('', resource.data.get('createdBy', '')) || isOwner('settings/trip'));
       allow delete: if false;
     }
-
     match /receipts/{expenseId} {
-      // trip members only; written once by the expense's author, in the same batch as the expense
-      allow read: if signedIn() && exists(/databases/$(database)/documents/memberLinks/$(request.auth.uid));
-      allow create, update: if signedIn()
-        && request.resource.data.keys().hasOnly(['data', 'by', 'createdAt'])
-        && request.resource.data.data is string && request.resource.data.data.size() < 400000
-        && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), request.resource.data.by)
-        && existsAfter(/databases/$(database)/documents/expenses/$(expenseId))
-        && getAfter(/databases/$(database)/documents/expenses/$(expenseId)).data.addedBy == request.resource.data.by;
+      allow read: if signedIn() && (isLinked('') || isOwner('settings/trip'));
+      allow create, update: if signedIn() && receiptWrite('', 'settings/trip', expenseId);
       allow delete: if false;
     }
-
     match /paymentInfo/{memberId} {
-      // where a member wants to be paid: visible to trip members, editable only by that member
-      allow read: if signedIn() && exists(/databases/$(database)/documents/memberLinks/$(request.auth.uid));
-      allow create, update: if signedIn()
-        && isMember(/databases/$(database)/documents/memberLinks/$(request.auth.uid), memberId)
-        && request.resource.data.keys().hasOnly(['jazzcash', 'easypaisa', 'bank', 'note', 'by', 'updatedAt'])
-        && request.resource.data.jazzcash is string && request.resource.data.jazzcash.size() <= 40
-        && request.resource.data.easypaisa is string && request.resource.data.easypaisa.size() <= 40
-        && request.resource.data.bank is string && request.resource.data.bank.size() <= 80
-        && request.resource.data.note is string && request.resource.data.note.size() <= 120;
+      allow read: if signedIn() && (isLinked('') || isOwner('settings/trip'));
+      allow create, update: if signedIn() && paymentWrite('', memberId);
       allow delete: if false;
     }
 
-    match /settings/trip {
-      allow read: if signedIn();
-      allow create: if signedIn() && !exists(/databases/$(database)/documents/settings/trip);
-      allow update: if signedIn() && (
-        // one-time ownership claim on the pre-existing default trip
-        (isUnset(resource.data, 'ownerUid')
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ownerUid']))
-        || fieldIs(resource.data, 'ownerUid', request.auth.uid)
-        // the one-time seed-members race flag
-        || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seeded'])
-      );
+    // every other trip
+    match /trips/{tripId} {
+      allow get: if signedIn();
+      allow list: if false; // nobody can enumerate trips
+      allow create: if safeId(tripId) && tripCreate();
+      allow update: if tripUpdate('trips/' + tripId);
+
+      match /memberLinks/{uid} {
+        allow read: if signedIn() && (request.auth.uid == uid || canRead('trips/' + tripId + '/', 'trips/' + tripId));
+        allow create, update: if signedIn() && linkWrite('trips/' + tripId + '/', uid);
+        allow delete: if signedIn() && (request.auth.uid == uid || isOwner('trips/' + tripId));
+      }
+      match /invites/{email} {
+        allow get: if signedIn() && (isOwner('trips/' + tripId) || email == verifiedEmail());
+        allow list: if signedIn() && isOwner('trips/' + tripId);
+        allow create, update: if signedIn() && inviteWrite('trips/' + tripId + '/', 'trips/' + tripId, email);
+        allow delete: if signedIn() && isOwner('trips/' + tripId);
+      }
+      match /members/{memberId} {
+        allow read: if canRead('trips/' + tripId + '/', 'trips/' + tripId);
+        allow create: if signedIn() && memberCreate('trips/' + tripId + '/', 'trips/' + tripId, memberId);
+        allow update: if signedIn() && memberUpdate('trips/' + tripId + '/', 'trips/' + tripId, memberId);
+        allow delete: if false;
+      }
+      match /expenses/{expenseId} {
+        allow read: if canRead('trips/' + tripId + '/', 'trips/' + tripId);
+        allow create: if signedIn() && expenseCreate('trips/' + tripId + '/', 'trips/' + tripId, expenseId);
+        allow update: if signedIn() && expenseUpdate('trips/' + tripId + '/', 'trips/' + tripId);
+        allow delete: if false;
+      }
+      match /recurring/{recId} {
+        allow read: if canRead('trips/' + tripId + '/', 'trips/' + tripId);
+        allow create: if signedIn() && recurringCreate('trips/' + tripId + '/', 'trips/' + tripId, recId);
+        allow update: if signedIn() && changedOnly(['active']) && request.resource.data.active is bool
+          && (actsAs('trips/' + tripId + '/', resource.data.get('createdBy', '')) || isOwner('trips/' + tripId));
+        allow delete: if false;
+      }
+      match /receipts/{expenseId} {
+        allow read: if signedIn() && (isLinked('trips/' + tripId + '/') || isOwner('trips/' + tripId));
+        allow create, update: if signedIn() && receiptWrite('trips/' + tripId + '/', 'trips/' + tripId, expenseId);
+        allow delete: if false;
+      }
+      match /paymentInfo/{memberId} {
+        allow read: if signedIn() && (isLinked('trips/' + tripId + '/') || isOwner('trips/' + tripId));
+        allow create, update: if signedIn() && paymentWrite('trips/' + tripId + '/', memberId);
+        allow delete: if false;
+      }
     }
 
-    // ================= per-user data =================
+    // ---------------- per-user data ----------------
 
     match /users/{uid} {
       allow read, write: if signedIn() && request.auth.uid == uid;
     }
 
-    // ================= background alerts (free: FCM + a scheduled GitHub job) =================
-    //
-    // pushTokens/{uid}: this person's device tokens. Only they can read or write
-    // them; the sender job reads them with a service account.
-    // pushEvents/{id}: "something happened on expense X" markers written by the
-    // person who did it. They carry no text and no recipient: the job looks the
-    // expense up and works out who to tell and what to say. The id is
-    // <trip>_<expense>_<kind>, create-only, so an event can fire at most once and
-    // can't be rewritten. Clients can't read them back.
-
-    function hasTripLink(tripKey) {
-      return tripKey == 'default'
-        ? exists(/databases/$(database)/documents/memberLinks/$(request.auth.uid))
-        : exists(/databases/$(database)/documents/trips/$(tripKey)/memberLinks/$(request.auth.uid));
-    }
+    // ---------------- background alerts (free: FCM + a scheduled job) ----------------
+    // pushTokens/{uid}: this person's device tokens, only theirs to read and write.
+    // pushEvents/{id}: "something happened on expense X" markers with no text and no
+    // recipient; the job re-derives both from the expense. The id includes the sender's
+    // uid, so nobody can pre-empt someone else's marker. Create-only, never readable.
 
     match /pushTokens/{uid} {
-      allow read: if signedIn() && request.auth.uid == uid;
+      allow read, delete: if signedIn() && request.auth.uid == uid;
       allow create, update: if signedIn() && request.auth.uid == uid
         && request.resource.data.keys().hasOnly(['tokens', 'updatedAt'])
         && request.resource.data.tokens is list && request.resource.data.tokens.size() <= 10;
-      allow delete: if signedIn() && request.auth.uid == uid;
     }
 
     match /pushEvents/{eventId} {
-      allow read: if false;
+      allow read, update, delete: if false;
       allow create: if signedIn()
         && request.resource.data.keys().hasOnly(['tripKey', 'expenseId', 'kind', 'fromUid', 'processed', 'createdAt'])
         && request.resource.data.fromUid == request.auth.uid
         && request.resource.data.processed == false
-        && request.resource.data.tripKey is string && request.resource.data.tripKey.size() <= 40
-        && request.resource.data.expenseId is string && request.resource.data.expenseId.size() <= 80
+        && request.resource.data.createdAt is number
+        && safeId(request.resource.data.tripKey) && safeId(request.resource.data.expenseId)
         && request.resource.data.kind in ['expense_added', 'settlement_marked', 'settlement_confirmed', 'settlement_disputed']
-        && eventId == request.resource.data.tripKey + '_' + request.resource.data.expenseId + '_' + request.resource.data.kind
-        && hasTripLink(request.resource.data.tripKey);
-      allow update, delete: if false;
-    }
-
-    // ================= created trips (nested paths) =================
-
-    match /trips/{tripId} {
-      allow read: if signedIn();
-      allow create: if signedIn();
-      allow update: if signedIn() && (
-        (isUnset(resource.data, 'ownerUid')
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ownerUid']))
-        || fieldIs(resource.data, 'ownerUid', request.auth.uid)
-        || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seeded'])
-      );
-
-      match /memberLinks/{uid} {
-        allow read: if signedIn();
-        allow create: if signedIn() && request.auth.uid == uid
-          && !exists(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(uid))
-          && request.resource.data.memberId is string
-          && getAfter(/databases/$(database)/documents/trips/$(tripId)/members/$(request.resource.data.memberId)).data.authUid == request.auth.uid;
-        allow update, delete: if false;
-      }
-
-      match /members/{memberId} {
-        allow read: if signedIn();
-        allow create: if signedIn()
-          && (isUnset(request.resource.data, 'authUid') || fieldIs(request.resource.data, 'authUid', request.auth.uid));
-        allow update: if signedIn() && (
-          (fieldIs(request.resource.data, 'authUid', request.auth.uid) && isUnset(resource.data, 'authUid')
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authUid']))
-          ||
-          (fieldIs(resource.data, 'authUid', request.auth.uid)
-            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['authUid', 'createdAt']))
-          ||
-          isOwnerOf(/databases/$(database)/documents/trips/$(tripId))
-        );
-        allow delete: if false;
-      }
-
-      match /expenses/{expenseId} {
-        allow read: if signedIn();
-        allow create: if signedIn() && request.resource.data.amount is number && request.resource.data.amount > 0 && (
-          (request.resource.data.type == 'settlement'
-            && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), request.resource.data.payerId)
-            && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), request.resource.data.addedBy)
-            && isUnset(request.resource.data, 'confirmedBy'))
-          ||
-          (request.resource.data.type != 'settlement'
-            && isTripOpen(/databases/$(database)/documents/trips/$(tripId))
-            && (isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), request.resource.data.addedBy)
-                || ('recurringId' in request.resource.data && request.resource.data.recurringId is string
-                    && exists(/databases/$(database)/documents/trips/$(tripId)/recurring/$(request.resource.data.recurringId))
-                    && get(/databases/$(database)/documents/trips/$(tripId)/recurring/$(request.resource.data.recurringId)).data.createdBy == request.resource.data.addedBy)))
-        );
-        allow update: if signedIn() && (
-          (resource.data.type == 'settlement'
-            && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), resource.data.participantIds[0])
-            && isUnset(resource.data, 'confirmedBy')
-            && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['confirmedBy', 'confirmedAt', 'disputed', 'disputedBy', 'disputedAt']))
-          ||
-          (resource.data.type != 'settlement'
-            && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), resource.data.addedBy)
-            && !request.resource.data.diff(resource.data).affectedKeys()
-                 .hasAny(['addedBy', 'type', 'createdAt', 'confirmedBy', 'confirmedAt', 'disputed', 'disputedBy', 'disputedAt']))
-          ||
-          (resource.data.type == 'settlement'
-            && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), resource.data.addedBy)
-            && isUnset(resource.data, 'confirmedBy')
-            && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['deleted', 'deletedBy', 'deletedAt']))
-          ||
-          isOwnerOf(/databases/$(database)/documents/trips/$(tripId))
-        );
-        allow delete: if false;
-      }
-
-      match /receipts/{expenseId} {
-        // trip members only; written once by the expense's author, in the same batch as the expense
-        allow read: if signedIn() && exists(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid));
-        allow create, update: if signedIn()
-          && request.resource.data.keys().hasOnly(['data', 'by', 'createdAt'])
-          && request.resource.data.data is string && request.resource.data.data.size() < 400000
-          && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), request.resource.data.by)
-          && existsAfter(/databases/$(database)/documents/trips/$(tripId)/expenses/$(expenseId))
-          && getAfter(/databases/$(database)/documents/trips/$(tripId)/expenses/$(expenseId)).data.addedBy == request.resource.data.by;
-        allow delete: if false;
-      }
-
-      match /paymentInfo/{memberId} {
-        // where a member wants to be paid: visible to trip members, editable only by that member
-        allow read: if signedIn() && exists(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid));
-        allow create, update: if signedIn()
-          && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), memberId)
-          && request.resource.data.keys().hasOnly(['jazzcash', 'easypaisa', 'bank', 'note', 'by', 'updatedAt'])
-          && request.resource.data.jazzcash is string && request.resource.data.jazzcash.size() <= 40
-          && request.resource.data.easypaisa is string && request.resource.data.easypaisa.size() <= 40
-          && request.resource.data.bank is string && request.resource.data.bank.size() <= 80
-          && request.resource.data.note is string && request.resource.data.note.size() <= 120;
-        allow delete: if false;
-      }
-
-      match /recurring/{recId} {
-        allow read: if signedIn();
-        allow create: if signedIn() && request.resource.data.amount is number && request.resource.data.amount > 0
-          && request.resource.data.interval in ['weekly', 'monthly']
-          && isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), request.resource.data.createdBy)
-          && isTripOpen(/databases/$(database)/documents/trips/$(tripId));
-        allow update: if signedIn()
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active'])
-          && (isMember(/databases/$(database)/documents/trips/$(tripId)/memberLinks/$(request.auth.uid), resource.data.createdBy)
-              || isOwnerOf(/databases/$(database)/documents/trips/$(tripId)));
-        allow delete: if false;
-      }
+        && eventId == request.resource.data.tripKey + '_' + request.resource.data.expenseId + '_'
+                      + request.resource.data.kind + '_' + request.auth.uid
+        && isLinked(request.resource.data.tripKey == 'default' ? '' : 'trips/' + request.resource.data.tripKey + '/');
     }
   }
 }

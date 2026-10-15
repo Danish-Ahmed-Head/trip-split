@@ -120,3 +120,56 @@ test("sweep: nested trips use their own members, expenses and settings", async (
   assert.match(messaging.calls[0].data.body, /Bob says they paid you/);
   assert.match(messaging.calls[0].data.body, /\$40/);
 });
+
+test("sweep: a payload error does not wipe a person's valid tokens", async () => {
+  await seed();
+  const messaging = {
+    async sendEachForMulticast(m) {
+      const responses = m.tokens.map(() => ({ success: false, error: { code: "messaging/invalid-argument" } }));
+      return { responses, successCount: 0, failureCount: responses.length };
+    },
+  };
+  await runPush({ db, messaging, log: () => {} });
+  assert.deepEqual((await db.doc("pushTokens/uB").get()).data().tokens, ["tokGood", "tokDead"]);
+});
+
+test("sweep: after a partial failure, people already told are not told again", async () => {
+  await seed();
+  await db.doc("members/c").set({ name: "Cara", active: true, authUid: "uC" });
+  await db.doc("expenses/e1").update({ participantIds: ["a", "b", "c"] });
+  await db.doc("pushTokens/uC").set({ tokens: ["tokC"], updatedAt: 1 });
+  const calls = [];
+  let failC = true;
+  const messaging = {
+    async sendEachForMulticast(m) {
+      calls.push(m.tokens[0]);
+      if (m.tokens.includes("tokC") && failC) throw new Error("FCM hiccup");
+      return { responses: m.tokens.map(() => ({ success: true })), successCount: m.tokens.length, failureCount: 0 };
+    },
+  };
+  const first = await runPush({ db, messaging, log: () => {} });
+  assert.equal(first.failed, 1);
+  failC = false;
+  await runPush({ db, messaging, log: () => {} });
+  assert.equal(calls.filter(t => t === "tokGood").length, 1, "Bob was told exactly once");
+  assert.equal(calls.filter(t => t === "tokC").length, 2, "Cara retried once");
+  assert.equal((await db.doc("pushEvents/default_e1_expense_added").get()).data().processed, true);
+});
+
+test("sweep: an event that keeps failing is given up after 5 tries", async () => {
+  await seed();
+  const messaging = { async sendEachForMulticast() { throw new Error("always down"); } };
+  for (let i = 0; i < 5; i++) await runPush({ db, messaging, log: () => {} });
+  const ev = (await db.doc("pushEvents/default_e1_expense_added").get()).data();
+  assert.equal(ev.processed, true);
+  assert.equal(ev.attempts, 5);
+  assert.match(ev.skipped, /gave up/);
+});
+
+test("sweep: a malformed event is closed without building odd paths", async () => {
+  await seed();
+  await db.doc("pushEvents/bad").set({ tripKey: "../x", expenseId: "e1", kind: "expense_added", fromUid: "uA", processed: false, createdAt: 1 });
+  const report = await runPush({ db, messaging: fakeMessaging(), log: () => {} });
+  assert.equal(report.failed, 0);
+  assert.equal((await db.doc("pushEvents/bad").get()).data().skipped, "malformed");
+});

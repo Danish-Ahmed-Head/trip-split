@@ -9,16 +9,32 @@ const isSettlement = e => e.type === "settlement";
 
 const cents = n => Math.round(n * 100) / 100;
 
-// Who owes how much for one expense. Expenses saved with an explicit `shares`
-// map (exact amounts, percentages or shares) use it; everything else, including
+// A shares map is only trusted when it is plausible: every value a finite number
+// of zero or more, every key one of the people in the split, and the parts adding
+// up to the amount. Anything else (a buggy or malicious write) falls back to an
+// even split, so nobody can be charged more than the expense itself.
+function validShares(e) {
+  const s = e.shares;
+  if (!s || typeof s !== "object") return false;
+  const entries = Object.entries(s);
+  if (!entries.length) return false;
+  const people = new Set(e.participantIds || []);
+  let sum = 0;
+  for (const [id, v] of entries) {
+    if (!people.has(id) || typeof v !== "number" || !Number.isFinite(v) || v < 0) return false;
+    sum += v;
+  }
+  return Math.abs(sum - e.amount) <= 0.01;
+}
+
+// Who owes how much for one expense. Expenses saved with a valid `shares` map
+// (exact amounts, percentages or shares) use it; everything else, including
 // every expense written before unequal splits existed, splits evenly.
 export function expenseShares(e) {
-  if (e.shares && typeof e.shares === "object" && Object.keys(e.shares).length) {
-    return { ...e.shares };
-  }
+  if (validShares(e)) return { ...e.shares };
   const ids = e.participantIds || [];
   const out = {};
-  if (!ids.length) return out;
+  if (!ids.length || !Number.isFinite(e.amount)) return out;
   const each = e.amount / ids.length;
   ids.forEach(id => { out[id] = (out[id] || 0) + each; });
   return out;
@@ -72,7 +88,8 @@ export function buildShares(mode, total, ids, inputs = {}) {
 export function computeBalances(members, expenses) {
   const net = {};
   members.forEach(m => { net[m.id] = 0; });
-  expenses.filter(e => isLive(e) && (!isSettlement(e) || e.confirmedBy)).forEach(e => {
+  expenses.filter(e => isLive(e) && Number.isFinite(e.amount) && e.amount > 0
+      && (!isSettlement(e) || e.confirmedBy)).forEach(e => {
     if (!(e.payerId in net)) net[e.payerId] = 0;
     net[e.payerId] += e.amount;
     Object.entries(expenseShares(e)).forEach(([pid, share]) => {
@@ -212,16 +229,18 @@ function occurrenceMs(startMs, interval, i) {
   return target.getTime();
 }
 
-// All occurrences due at or before nowMs, oldest first, capped.
+// Occurrences due at or before nowMs, oldest first. Only the most recent `cap`
+// are returned (older ones were created on earlier visits), so a template keeps
+// working for as long as it runs instead of stopping after `cap` occurrences.
 export function recurrenceOccurrences(rec, nowMs, cap = 60) {
   const out = [];
   if (!rec || !rec.startDate || (rec.interval !== "weekly" && rec.interval !== "monthly")) return out;
-  for (let i = 0; i < cap; i++) {
+  for (let i = 0; i < 100000; i++) {
     const dueMs = occurrenceMs(rec.startDate, rec.interval, i);
     if (dueMs > nowMs) break;
     out.push({ key: ymd(dueMs), dueMs, expenseId: `rec_${rec.id}_${ymd(dueMs)}` });
   }
-  return out;
+  return out.slice(-cap);
 }
 
 export function nextOccurrenceMs(rec, nowMs) {
