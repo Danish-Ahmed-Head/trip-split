@@ -64,6 +64,10 @@ export async function runPush({ db, messaging, dryRun = false, log = console.log
           sent += res.successCount;
         }
       }
+      // say why, so a quiet sweep can be explained from the Actions log alone
+      log(`${dryRun ? "[dry run] " : ""}event ${doc.id}: ${plan.ok
+        ? (sent ? `sent to ${sent} device(s)` : "recipients found, but none has a device registered")
+        : `skipped (${plan.reason})`}`);
       if (!dryRun) {
         await doc.ref.update({ processed: true, processedAt: now(), sent, skipped: plan.ok ? null : plan.reason });
       }
