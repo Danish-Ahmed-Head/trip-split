@@ -1,0 +1,47 @@
+name: deploy-rules
+
+# Publishes firestore.rules to the live project, but only after the rules
+# tests pass. Runs when firestore.rules changes on main, or by hand. This keeps
+# the published rules identical to the repo copy (they drifted before).
+#
+# Uses the same FIREBASE_SERVICE_ACCOUNT secret as the alert job.
+
+on:
+  push:
+    branches: [main]
+    paths: [firestore.rules]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-rules
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: github.repository == 'Danish-Ahmed-Head/trip-split'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - name: Rules tests must pass first
+        run: npm run test:rules
+      - name: Publish rules
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then echo "No FIREBASE_SERVICE_ACCOUNT secret"; exit 1; fi
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/sa.json"
+          GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json" npx firebase deploy --only firestore:rules --project spark-610ee --non-interactive
+          rm -f "$RUNNER_TEMP/sa.json"

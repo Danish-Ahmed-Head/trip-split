@@ -31,7 +31,7 @@ No lint or build scripts exist. CI (`.github/workflows/test.yml`) runs `npm test
 ## Deployment gotchas
 
 - Pushing to `main` auto-deploys the static files via GitHub Pages.
-- **`firestore.rules` is not auto-deployed.** After changing it, publish via Firebase Console (project `spark-610ee`) or `firebase deploy --only firestore:rules`. The repo copy and the published rules have drifted before.
+- **`firestore.rules` deploys from CI**: `.github/workflows/deploy-rules.yml` runs the rules tests and then publishes, whenever `firestore.rules` changes on `main` (or by hand). Never edit rules in the Firebase Console; it would drift from the repo.
 - Repeating expenses are materialised client-side on app open (no scheduler).
 - Every id put into HTML must go through `escapeHtml` (Firestore ids may contain quotes and markup).
 - Payment details (JazzCash/Easypaisa/Raast) are stored and shown only; the app never moves money.

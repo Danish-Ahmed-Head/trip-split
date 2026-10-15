@@ -94,13 +94,7 @@ Then open `http://localhost:8743`. The Firebase config in `index.html` points at
 
 Pushing to `main` auto-deploys `index.html` via GitHub Pages — there's no separate build artifact.
 
-Firestore rules are **not** deployed automatically. After changing `firestore.rules`, paste its contents into Firebase Console → Firestore Database → Rules (project `spark-610ee`) and publish, or use the Firebase CLI:
-
-```bash
-firebase deploy --only firestore:rules
-```
-
-Keep the repo's `firestore.rules` and what's actually published in the console in sync — they drifted out of sync once already (see the Engineering doc's Test Plan tab, "Production rollout findings").
+Firestore rules deploy from GitHub Actions: when `firestore.rules` changes on `main`, `.github/workflows/deploy-rules.yml` runs the rules tests and publishes only if they pass. Don't edit rules in the Firebase Console, or the live rules drift from the repo (they did once before).
 
 ## Documentation
 
