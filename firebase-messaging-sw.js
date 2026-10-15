@@ -40,9 +40,15 @@ const messaging = firebase.messaging();
 // Messages are data-only (title/body/tag/link), so this handler is what shows them.
 messaging.onBackgroundMessage(async payload => {
   const d = (payload && payload.data) || {};
-  // If the app is open and in front, the page already shows its own alert.
+  // If this very trip is open and in front, the page already shows its own alert.
+  // Only count windows inside this app's folder and on the same trip: another
+  // trip, or another site on the same github.io domain, must not swallow it.
+  const target = new URL(d.link || "", self.registration.scope);
+  const tripOf = u => new URL(u).searchParams.get("trip") || "";
   const wins = await clients.matchAll({ type: "window", includeUncontrolled: true });
-  if (wins.some(w => w.visibilityState === "visible")) return;
+  if (wins.some(w => w.visibilityState === "visible"
+      && w.url.startsWith(self.registration.scope)
+      && tripOf(w.url) === tripOf(target.href))) return;
   return self.registration.showNotification(d.title || "Trip Split", {
     body: d.body || "",
     tag: d.tag || undefined, // same tag as the in-app alert, so they replace each other

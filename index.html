@@ -397,6 +397,16 @@
   </div>
 </div>
 
+<div id="notInvitedScreen" style="display:none;">
+  <div class="card" style="max-width:420px; margin:18vh auto 0; padding:28px 22px; text-align:center;">
+    <h2 style="font-size:19px; margin-bottom:8px;">You're not on this trip yet</h2>
+    <p style="font-size:14px; color:var(--ink-muted); line-height:1.6; margin:0 0 10px;">Trips are private. Send this email address to the person who runs the trip and ask them to invite you from the People tab:</p>
+    <p class="mono" id="notInvitedEmail" style="font-weight:600; word-break:break-all; margin:0 0 18px;"></p>
+    <button type="button" class="btn-primary" id="notInvitedCopy" style="width:100%;">Copy my email</button>
+    <button type="button" class="btn-secondary" id="notInvitedSignout" style="width:100%; margin-top:8px;">Use a different Google account</button>
+  </div>
+</div>
+
 <div id="signinScreen">
   <div class="avatar lg" style="background:var(--accent);">₨</div>
   <h1>Trip Split</h1>
@@ -628,7 +638,7 @@
 <div class="modal-backdrop" id="whoBackdrop">
   <div class="modal-sheet">
     <h2>Which one is you?</h2>
-    <div class="sub">Link your Google account to your name in this trip. This is one-time — once claimed, only you can act as this person.</div>
+    <div class="sub" id="whoSub">Link your Google account to your name in this trip. This is one-time — once claimed, only you can act as this person.</div>
     <div class="who-grid" id="whoGrid"></div>
   </div>
 </div>
@@ -731,7 +741,10 @@ const DEFAULT_TRIP_NAME = "Trip Split";
    paths this app always used (so the trip you already started keeps working
    exactly as-is). A ?trip=<id> param addresses a separate trip created later
    via "Start a new trip", stored under trips/<id>/... . */
-const TRIP_ID = new URLSearchParams(location.search).get("trip") || null;
+const RAW_TRIP = new URLSearchParams(location.search).get("trip");
+// a trip id is a plain Firestore id; anything else is a broken or crafted link
+const TRIP_ID = RAW_TRIP && /^[A-Za-z0-9_-]{1,100}$/.test(RAW_TRIP) ? RAW_TRIP : null;
+const BAD_TRIP_LINK = !!RAW_TRIP && !TRIP_ID;
 const MEMBERS_PATH = TRIP_ID ? `trips/${TRIP_ID}/members` : "members";
 const EXPENSES_PATH = TRIP_ID ? `trips/${TRIP_ID}/expenses` : "expenses";
 // reverse index so Security Rules can resolve "which member is this signed-in
@@ -740,6 +753,8 @@ const MEMBERLINKS_PATH = TRIP_ID ? `trips/${TRIP_ID}/memberLinks` : "memberLinks
 const RECURRING_PATH = TRIP_ID ? `trips/${TRIP_ID}/recurring` : "recurring";
 const RECEIPTS_PATH = TRIP_ID ? `trips/${TRIP_ID}/receipts` : "receipts";
 const PAYMENTINFO_PATH = TRIP_ID ? `trips/${TRIP_ID}/paymentInfo` : "paymentInfo";
+// owner-written invites: invites/<lowercase gmail> -> {memberId}
+const INVITES_PATH = TRIP_ID ? `trips/${TRIP_ID}/invites` : "invites";
 
 /* ---------- setup guard ---------- */
 const needsSetup = !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey === "YOUR_API_KEY";
@@ -758,6 +773,7 @@ let tripSettings = { name: DEFAULT_TRIP_NAME, currency: DEFAULT_CURRENCY, ownerU
 let recurring = [];     // {id, description, amount, payerId, participantIds, category, interval, startDate, active, createdBy}
 let myTrips = {};       // from users/<uid>.trips
 let paymentInfo = {};   // memberId -> {jazzcash, easypaisa, bank, note}
+let invites = {};       // email -> memberId (owner only)
 let tripNotFound = false;
 let editingExpenseId = null;
 let showDeleted = false;
@@ -775,6 +791,8 @@ function userDoc(forUid){ return doc(db, "users", forUid); }
 function receiptDoc(expenseId){ return doc(db, RECEIPTS_PATH, expenseId); }
 function paymentDoc(memberId){ return doc(db, PAYMENTINFO_PATH, memberId); }
 function paymentCol(){ return collection(db, PAYMENTINFO_PATH); }
+function inviteDoc(email){ return doc(db, INVITES_PATH, email); }
+function invitesCol(){ return collection(db, INVITES_PATH); }
 function tripSettingsRef(){ return TRIP_ID ? doc(db, "trips", TRIP_ID) : doc(db, "settings", "trip"); }
 
 const AVATAR_COLORS = ["#146F66","#B5453A","#8E6F14","#3A5FB5","#7A4CB5","#B5148A","#4C8E14","#14868E"];
@@ -787,7 +805,9 @@ function initials(name){
 }
 function fmtMoney(n, currency){
   const v = Number(n)||0;
-  const cur = currency || tripSettings.currency;
+  // only a real 3-letter code reaches Intl or the page
+  const cur = /^[A-Z]{3}$/.test(currency || "") ? currency
+    : (/^[A-Z]{3}$/.test(tripSettings.currency || "") ? tripSettings.currency : DEFAULT_CURRENCY);
   try{
     return new Intl.NumberFormat(undefined,{style:"currency",currency:cur,maximumFractionDigits:2}).format(v);
   }catch(e){
@@ -816,8 +836,20 @@ function initConnectionIndicator(){
   window.addEventListener("offline", update);
   update();
 }
-function saveToast(actionLabel){
-  toast(navigator.onLine ? actionLabel : actionLabel + " offline — will sync later");
+function saveToast(actionLabel, state){
+  toast(navigator.onLine && state !== "queued" ? actionLabel : actionLabel + " on this phone — will sync when you're online");
+}
+// Firestore resolves a write only once the server has it. Offline the write is
+// already safe in the local cache, so don't leave the screen waiting: after a
+// moment call it "queued", and report a late failure if the server refuses it.
+function settleWrite(p){
+  return Promise.race([
+    p.then(()=>"saved"),
+    new Promise(r=>setTimeout(()=>r("queued"), navigator.onLine ? 8000 : 300)),
+  ]).then(state=>{
+    if (state === "queued") p.catch(e=>errorToast(e, "A change saved offline was refused when it synced"));
+    return state;
+  });
 }
 function errorToast(e, fallback){
   toast(e && e.code === "permission-denied" ? "Not allowed — that's not yours to change" : fallback);
@@ -845,18 +877,37 @@ document.querySelectorAll(".tab-btn").forEach(btn=>{
 const whoBackdrop = document.getElementById("whoBackdrop");
 document.getElementById("mePill").addEventListener("click", ()=>{
   if (meId){
-    if (confirm("Sign out of Trip Split on this device?")) signOut(auth);
+    if (confirm("Sign out of Trip Split on this device?")) signOutHere();
   } else {
     openWhoModal();
   }
 });
-function openWhoModal(){
+async function signOutHere(){
+  try{ await disablePush(); }catch(e){ /* the job drops dead tokens anyway */ }
+  await signOut(auth); // onAuthStateChanged reloads the page
+}
+function myEmail(){ return (auth?.currentUser?.email || "").trim().toLowerCase(); }
+
+// Only the name the owner invited this Google account as can be claimed. The
+// owner, while they have no name in the trip yet, may take any unclaimed one.
+async function openWhoModal(){
   const grid = document.getElementById("whoGrid");
+  const sub = document.getElementById("whoSub");
   grid.innerHTML = "";
-  members.filter(m=>m.active && !m.authUid).forEach(m=>{
+  let invitedId = null;
+  try{
+    const inv = await getDoc(inviteDoc(myEmail() || "~"));
+    if (inv.exists()) invitedId = inv.data().memberId;
+  }catch(e){ /* not invited */ }
+  const ownerWithoutName = isTripOwner() && !members.some(m=>m.authUid === uid);
+  const choices = members.filter(m=>m.active && !m.authUid && (m.id === invitedId || ownerWithoutName));
+  sub.textContent = choices.length
+    ? "Link your Google account to your name in this trip. Once linked, only you can act as this person."
+    : `Nothing to link for ${myEmail() || "this account"} yet. Ask the trip owner to invite this email address to your name.`;
+  choices.forEach(m=>{
     const el = document.createElement("div");
     el.className = "who-option";
-    el.innerHTML = `<span class="avatar" style="background:${colorFor(m.id)}">${initials(m.name)}</span><span class="name">${escapeHtml(m.name)}</span>`;
+    el.innerHTML = `<span class="avatar" style="background:${colorFor(m.id)}">${escapeHtml(initials(m.name))}</span><span class="name">${escapeHtml(m.name)}</span>`;
     el.addEventListener("click", async ()=>{
       try{
         const batch = writeBatch(db);
@@ -864,28 +915,41 @@ function openWhoModal(){
         batch.set(memberLinkDoc(uid), {memberId: m.id, claimedAt: Date.now()});
         await batch.commit();
         whoBackdrop.classList.remove("open");
-      }catch(e){ errorToast(e, "Couldn't claim — check your connection"); }
+      }catch(e){ errorToast(e, "Couldn't link — check your connection"); }
     });
     grid.appendChild(el);
   });
-  const addEl = document.createElement("div");
-  addEl.className = "who-option claim-new";
-  addEl.textContent = "+ I'm not on this list";
-  addEl.addEventListener("click", async ()=>{
-    const name = prompt("Your name for this trip:", auth.currentUser?.displayName || "");
-    if (!name || !name.trim()) return;
-    try{
-      const ref = doc(membersCol());
-      const batch = writeBatch(db);
-      batch.set(ref, {name: name.trim(), active:true, createdAt: Date.now(), authUid: uid});
-      batch.set(memberLinkDoc(uid), {memberId: ref.id, claimedAt: Date.now()});
-      await batch.commit();
-      whoBackdrop.classList.remove("open");
-    }catch(e){ toast("Couldn't save — check your connection"); }
-  });
-  grid.appendChild(addEl);
+  if (ownerWithoutName){
+    const addEl = document.createElement("div");
+    addEl.className = "who-option claim-new";
+    addEl.textContent = "+ Add me as a new person";
+    addEl.addEventListener("click", async ()=>{
+      const name = prompt("Your name for this trip:", auth.currentUser?.displayName || "");
+      if (!name || !name.trim()) return;
+      try{
+        const ref = doc(membersCol());
+        const batch = writeBatch(db);
+        batch.set(ref, {name: name.trim().slice(0, 40), active:true, createdAt: Date.now(), authUid: uid});
+        batch.set(memberLinkDoc(uid), {memberId: ref.id, claimedAt: Date.now()});
+        await batch.commit();
+        whoBackdrop.classList.remove("open");
+      }catch(e){ errorToast(e, "Couldn't save — check your connection"); }
+    });
+    grid.appendChild(addEl);
+  }
   whoBackdrop.classList.add("open");
 }
+function showNotInvited(){
+  document.getElementById("notInvitedEmail").textContent = myEmail() || "(no email on this account)";
+  document.getElementById("notInvitedScreen").style.display = "block";
+  document.getElementById("topbar").style.display = "none";
+  document.querySelector("main").style.display = "none";
+  document.querySelector(".tabbar").style.display = "none";
+}
+document.getElementById("notInvitedCopy").addEventListener("click", async ()=>{
+  toast((await copyText(myEmail())) ? "Email copied" : "Couldn't copy — select it manually");
+});
+document.getElementById("notInvitedSignout").addEventListener("click", ()=> signOutHere());
 whoBackdrop.addEventListener("click", (e)=>{ if(e.target===whoBackdrop) whoBackdrop.classList.remove("open"); });
 
 /* ---------- balance sheet (per-person, private to the viewer) ---------- */
@@ -902,7 +966,7 @@ function balsheetRowHtml(otherId, amount, items){
   const sortedItems = [...items].sort((a,b)=>(b.date||0)-(a.date||0));
   return `<div class="balsheet-row">
     <div class="balsheet-top">
-      <span class="avatar" style="background:${colorFor(otherId)}">${initials(nameOf(otherId))}</span>
+      <span class="avatar" style="background:${colorFor(otherId)}">${escapeHtml(initials(nameOf(otherId)))}</span>
       <span class="name">${escapeHtml(nameOf(otherId))}</span>
       <span class="amt mono">${fmtMoney(amount)}</span>
     </div>
@@ -1012,12 +1076,12 @@ function renderHome(){
       const pending = pendingSettlementBetween(s.from, s.to);
       let action;
       if (pending) action = `<span class="status-tag pending">Pending</span>`;
-      else if (meId===s.from) action = `<span style="display:flex; gap:8px; align-items:center;"><button type="button" class="link-btn btn-howpay" data-to="${s.to}" data-amt="${s.amount}">How to pay</button><button class="btn-settle" data-from="${s.from}" data-to="${s.to}" data-amt="${s.amount}">Mark paid</button></span>`;
+      else if (meId===s.from) action = `<span style="display:flex; gap:8px; align-items:center;"><button type="button" class="link-btn btn-howpay" data-to="${escapeHtml(s.to)}" data-amt="${s.amount}">How to pay</button><button class="btn-settle" data-from="${escapeHtml(s.from)}" data-to="${escapeHtml(s.to)}" data-amt="${s.amount}">Mark paid</button></span>`;
       else action = `<span class="empty-note" style="padding:0; font-size:12px;">Waiting on ${escapeHtml(nameOf(s.from))}</span>`;
       return `
       <div class="settle-row">
         <div class="settle-flow">
-          <span class="avatar" style="background:${colorFor(s.from)}">${initials(nameOf(s.from))}</span>
+          <span class="avatar" style="background:${colorFor(s.from)}">${escapeHtml(initials(nameOf(s.from)))}</span>
           <div class="names">
             <b>${escapeHtml(nameOf(s.from))}</b>
           </div>
@@ -1035,10 +1099,11 @@ function renderHome(){
     });
     settleCard.querySelectorAll(".btn-settle").forEach(btn=>{
       btn.addEventListener("click", async ()=>{
-        const from = btn.dataset.from, to = btn.dataset.to, amt = parseFloat(btn.dataset.amt);
+        const from = btn.dataset.from, to = btn.dataset.to, amt = Math.round(parseFloat(btn.dataset.amt) * 100) / 100;
         btn.disabled = true; btn.textContent = "Saving…";
         try{
-          const settleRef = await addDoc(expensesCol(), {
+          const settleRef = doc(expensesCol());
+          const state = await settleWrite(setDoc(settleRef, {
             type: "settlement",
             description: "Settlement",
             amount: amt,
@@ -1048,9 +1113,9 @@ function renderHome(){
             addedBy: meId || from,
             confirmedBy: null,
             confirmedAt: null
-          });
+          }));
           emitPushEvent("settlement_marked", settleRef.id);
-          saveToast("Marked paid — waiting for " + nameOf(to) + " to confirm");
+          saveToast("Marked paid — waiting for " + nameOf(to) + " to confirm", state);
         }catch(e){
           errorToast(e, "Couldn't save — check your connection");
           btn.disabled = false; btn.textContent = "Mark paid";
@@ -1070,11 +1135,11 @@ function renderHome(){
     pendingCard.style.display = "block";
     pendingCard.innerHTML = myPending.map(e=>`
       <div class="pend-row">
-        <span class="avatar" style="background:${colorFor(e.payerId)}">${initials(nameOf(e.payerId))}</span>
+        <span class="avatar" style="background:${colorFor(e.payerId)}">${escapeHtml(initials(nameOf(e.payerId)))}</span>
         <div class="pend-flow"><b>${escapeHtml(nameOf(e.payerId))}</b> says they paid you <span class="mono">${fmtMoney(e.amount)}</span></div>
         <div class="pend-actions">
-          <button class="btn-confirm" data-id="${e.id}">Confirm</button>
-          <button class="btn-dispute" data-id="${e.id}">Dispute</button>
+          <button class="btn-confirm" data-id="${escapeHtml(e.id)}">Confirm</button>
+          <button class="btn-dispute" data-id="${escapeHtml(e.id)}">Dispute</button>
         </div>
       </div>
     `).join("");
@@ -1082,9 +1147,9 @@ function renderHome(){
       btn.addEventListener("click", async ()=>{
         btn.disabled = true;
         try{
-          await updateDoc(expenseDoc(btn.dataset.id), {confirmedBy: meId, confirmedAt: Date.now()});
+          const state = await settleWrite(updateDoc(expenseDoc(btn.dataset.id), {confirmedBy: meId, confirmedAt: Date.now()}));
           emitPushEvent("settlement_confirmed", btn.dataset.id);
-          saveToast("Confirmed received");
+          saveToast("Confirmed received", state);
         }catch(e){ errorToast(e, "Couldn't save — check your connection"); btn.disabled = false; }
       });
     });
@@ -1093,9 +1158,9 @@ function renderHome(){
         if (!confirm("Dispute this? It'll go back to unpaid until you two sort it out.")) return;
         btn.disabled = true;
         try{
-          await updateDoc(expenseDoc(btn.dataset.id), {disputed:true, disputedBy: meId, disputedAt: Date.now()});
+          const state = await settleWrite(updateDoc(expenseDoc(btn.dataset.id), {disputed:true, disputedBy: meId, disputedAt: Date.now()}));
           emitPushEvent("settlement_disputed", btn.dataset.id);
-          saveToast("Marked as disputed");
+          saveToast("Marked as disputed", state);
         }catch(e){ errorToast(e, "Couldn't save — check your connection"); btn.disabled = false; }
       });
     });
@@ -1107,7 +1172,7 @@ function renderHome(){
     const cls = amt > 0.01 ? "positive" : amt < -0.01 ? "negative" : "";
     const text = Math.abs(amt) < 0.01 ? "settled" : fmtMoney(Math.abs(amt)) + (amt>0 ? " back" : " owes");
     return `<div class="bal-row">
-      <span class="avatar" style="background:${colorFor(m.id)}">${initials(m.name)}</span>
+      <span class="avatar" style="background:${colorFor(m.id)}">${escapeHtml(initials(m.name))}</span>
       <span class="name">${escapeHtml(m.name)}</span>
       <span class="amt mono" style="color:${amt>0.01?'var(--positive)':amt<-0.01?'var(--negative)':'var(--ink-muted)'}">${text}</span>
     </div>`;
@@ -1126,7 +1191,7 @@ function renderAddForm(){
   const activeMembers = members.filter(m=>m.active);
   const prevPayer = payerSel.value;
   const isNewEditSession = payerSel.dataset.editingFor !== (editingExpenseId || "");
-  payerSel.innerHTML = activeMembers.map(m=>`<option value="${m.id}">${escapeHtml(m.name)}${m.id===meId?' (you)':''}</option>`).join("");
+  payerSel.innerHTML = activeMembers.map(m=>`<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}${m.id===meId?' (you)':''}</option>`).join("");
 
   if (editingExpense && isNewEditSession){
     payerSel.value = editingExpense.payerId;
@@ -1148,8 +1213,8 @@ function renderAddForm(){
     if (isFirstSplitRender && editingExpense) checked = (editingExpense.participantIds||[]).includes(m.id);
     else if (isFirstSplitRender) checked = true;
     else checked = existingChecked.has(m.id);
-    return `<div class="check-chip ${checked?'checked':''}" data-id="${m.id}">
-      <span class="avatar" style="background:${colorFor(m.id)}">${initials(m.name)}</span>
+    return `<div class="check-chip ${checked?'checked':''}" data-id="${escapeHtml(m.id)}">
+      <span class="avatar" style="background:${colorFor(m.id)}">${escapeHtml(initials(m.name))}</span>
       <span>${escapeHtml(m.name)}</span>
     </div>`;
   }).join("");
@@ -1189,8 +1254,7 @@ function enterEditMode(id){
 }
 function cancelEdit(){
   editingExpenseId = null;
-  document.getElementById("f-desc").value = "";
-  document.getElementById("f-amount").value = "";
+  resetAddForm();
   renderAddForm();
   document.querySelector('.tab-btn[data-view="ledger"]').click();
 }
@@ -1242,7 +1306,7 @@ function renderSplitInputs(){
   wrap.style.display = "block";
   wrap.innerHTML = ids.map(id=>{
     const v = (id in keep && !Number.isNaN(keep[id])) ? keep[id] : (id in splitDefaults ? splitDefaults[id] : (mode === "shares" ? 1 : ""));
-    return `<div class="split-row"><span class="who">${escapeHtml(nameOf(id))}</span><input class="input" type="number" inputmode="decimal" step="0.01" min="0" data-id="${id}" value="${v}" placeholder="0" /><span style="font-size:12px; color:var(--ink-muted); width:34px;">${escapeHtml(unit)}</span></div>`;
+    return `<div class="split-row"><span class="who">${escapeHtml(nameOf(id))}</span><input class="input" type="number" inputmode="decimal" step="0.01" min="0" data-id="${escapeHtml(id)}" value="${escapeHtml(v)}" placeholder="0" /><span style="font-size:12px; color:var(--ink-muted); width:34px;">${escapeHtml(unit)}</span></div>`;
   }).join("") || `<div class="empty-note" style="padding:6px 0;">Pick who to split with above.</div>`;
   wrap.querySelectorAll("input").forEach(i=>i.addEventListener("input", updateSplitHint));
   updateSplitHint();
@@ -1262,8 +1326,9 @@ async function compressReceipt(file){
     c.height = Math.max(1, Math.round(bmp.height * scale));
     c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
     const url = c.toDataURL("image/jpeg", q);
-    if (url.length <= 380000) return url;
+    if (url.length <= 380000){ bmp.close?.(); return url; }
   }
+  bmp.close?.();
   return null;
 }
 const receiptBackdrop = document.getElementById("receiptBackdrop");
@@ -1298,6 +1363,7 @@ document.getElementById("addForm").addEventListener("submit", async (e)=>{
   const chipIds = selectedParticipantIds();
   if (tripSettings.closed){ toast("This trip is closed. The owner can reopen it in People."); return; }
   if (!desc || !amount || amount<=0 || !payerId){ toast("Fill in all fields"); return; }
+  if (desc.length > 200){ toast("Keep the description under 200 characters"); return; }
   if (!chipIds.length){ toast("Pick at least one person to split with"); return; }
 
   const mode = document.getElementById("f-splitmode").value;
@@ -1333,22 +1399,22 @@ document.getElementById("addForm").addEventListener("submit", async (e)=>{
         editedAt: Date.now(), editedBy: meId || payerId
       });
       if (receipt) batch.set(receiptDoc(wasEditing), {data: receipt, by: meId, createdAt: Date.now()});
-      await batch.commit();
+      const state = await settleWrite(batch.commit());
       editingExpenseId = null;
       resetAddForm();
-      saveToast("Expense updated");
+      saveToast("Expense updated", state);
       document.querySelector('.tab-btn[data-view="ledger"]').click();
     } else if (repeat){
       // the first occurrence is created by the generator as soon as this
       // template syncs, so there is no separate one-off expense here
-      await addDoc(recurringCol(), {
+      const state = await settleWrite(setDoc(doc(recurringCol()), {
         description: desc, amount, payerId, participantIds, category,
         ...(splitFields || {}),
         interval: repeat, startDate: Date.now(), active: true,
         createdBy: meId || payerId, createdAt: Date.now()
-      });
+      }));
       resetAddForm();
-      saveToast("Repeating expense saved");
+      saveToast("Repeating expense saved", state);
       document.querySelector('.tab-btn[data-view="home"]').click();
     } else {
       const ref = doc(expensesCol());
@@ -1366,10 +1432,10 @@ document.getElementById("addForm").addEventListener("submit", async (e)=>{
         addedBy: meId || payerId
       });
       if (receipt) batch.set(receiptDoc(ref.id), {data: receipt, by: meId, createdAt: Date.now()});
-      await batch.commit();
+      const state = await settleWrite(batch.commit());
       emitPushEvent("expense_added", ref.id);
       resetAddForm();
-      saveToast("Expense added");
+      saveToast("Expense added", state);
       document.querySelector('.tab-btn[data-view="home"]').click();
     }
   }catch(err){
@@ -1389,12 +1455,15 @@ function ledgerItemHtml(e, isDeleted){
   const editedMeta = (!isDeleted && e.editedAt)
     ? `<div class="ledger-meta edited-meta">Edited by ${escapeHtml(nameOf(e.editedBy))} · ${new Date(e.editedAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}</div>`
     : "";
-  const canModify = e.addedBy===meId || (tripSettings.ownerUid && uid===tripSettings.ownerUid);
+  // mirror the rules: a settlement can only be withdrawn while unconfirmed, by the payer or the owner
+  const canModify = isSettlement
+    ? (!e.confirmedBy && (e.payerId===meId || isTripOwner()))
+    : (e.addedBy===meId || isTripOwner());
   const actions = !canModify ? "" : isDeleted
-    ? `<button class="ledger-del ledger-restore" data-id="${e.id}" title="Restore">↺</button>`
+    ? `<button class="ledger-del ledger-restore" data-id="${escapeHtml(e.id)}" title="Restore">↺</button>`
     : `<div class="ledger-actions">
-        ${!isSettlement ? `<button class="ledger-edit" data-id="${e.id}" title="Edit">✎</button>` : ""}
-        <button class="ledger-del" data-id="${e.id}" title="Delete">✕</button>
+        ${!isSettlement ? `<button class="ledger-edit" data-id="${escapeHtml(e.id)}" title="Edit">✎</button>` : ""}
+        <button class="ledger-del" data-id="${escapeHtml(e.id)}" title="Delete">✕</button>
       </div>`;
   const settleStatus = isSettlement
     ? (e.confirmedBy ? '<span class="status-tag confirmed">Confirmed</span>'
@@ -1402,7 +1471,7 @@ function ledgerItemHtml(e, isDeleted){
       : '<span class="status-tag pending">Pending</span>')
     : "";
   return `<div class="ledger-item ${isDeleted?'ledger-item-deleted':''}">
-    <span class="avatar" style="background:${colorFor(e.payerId)}">${initials(nameOf(e.payerId))}</span>
+    <span class="avatar" style="background:${colorFor(e.payerId)}">${escapeHtml(initials(nameOf(e.payerId)))}</span>
     <div class="ledger-main">
       <div class="ledger-top">
         <div class="ledger-desc">${settleStatus}${(!isSettlement && e.category) ? `<span class="cat-tag">${escapeHtml(e.category)}</span>` : ""}${e.recurringId ? `<span class="cat-tag">repeats</span>` : ""}${escapeHtml(e.description)}</div>
@@ -1411,7 +1480,7 @@ function ledgerItemHtml(e, isDeleted){
       <div class="ledger-meta">${isSettlement
         ? `${escapeHtml(nameOf(e.payerId))} paid ${escapeHtml(participantNames)} · ${date}`
         : `${escapeHtml(nameOf(e.payerId))} paid · split ${e.shares ? "as " + Object.entries(e.shares).map(([id,a])=>escapeHtml(nameOf(id))+" "+fmtMoney(a)).join(", ") : "with " + escapeHtml(participantNames)} · ${date}`}</div>
-      ${e.hasReceipt ? `<button type="button" class="link-btn ledger-receipt" data-id="${e.id}">View receipt</button>` : ""}
+      ${e.hasReceipt ? `<button type="button" class="link-btn ledger-receipt" data-id="${escapeHtml(e.id)}">View receipt</button>` : ""}
       ${editedMeta}
       ${deletedMeta}
     </div>
@@ -1497,49 +1566,105 @@ document.addEventListener("click", (e)=>{
 });
 
 function renderPeople(){
-  document.getElementById("p-tripname").value = tripSettings.name || "";
-  document.getElementById("p-currency").value = tripSettings.currency || DEFAULT_CURRENCY;
+  const owner = isTripOwner();
+  const nameInp = document.getElementById("p-tripname"), curSel = document.getElementById("p-currency");
+  if (document.activeElement !== nameInp) nameInp.value = tripSettings.name || "";
+  curSel.value = tripSettings.currency || DEFAULT_CURRENCY;
+  nameInp.disabled = !owner; curSel.disabled = !owner;
   document.getElementById("p-triplink").value = location.href;
+  document.getElementById("p-addbtn").closest(".card").style.display = owner ? "block" : "none";
+
+  const invitedAs = {}; // memberId -> [emails]
+  Object.entries(invites).forEach(([email, mid])=>{ (invitedAs[mid] = invitedAs[mid] || []).push(email); });
 
   const card = document.getElementById("peopleCard");
   const sorted = [...members].sort((a,b)=> (b.active-a.active) || a.name.localeCompare(b.name));
-  card.innerHTML = sorted.map(m=>`
-    <div class="${m.active?'':'inactive'}">
+  card.innerHTML = sorted.map(m=>{
+    const self = m.id === meId;
+    const canRename = owner || self;
+    const status = m.authUid
+      ? (self ? "you" : "signed in")
+      : invitedAs[m.id] ? "invited: " + invitedAs[m.id].join(", ")
+      : (owner ? "not invited yet" : "hasn't joined yet");
+    const actions = [];
+    if (owner && m.active && !m.authUid) actions.push(`<button class="link-btn" data-id="${escapeHtml(m.id)}" data-action="invite">${invitedAs[m.id] ? "Change invite" : "Invite"}</button>`);
+    if (owner && m.authUid && !self) actions.push(`<button class="link-btn" data-id="${escapeHtml(m.id)}" data-action="unlink">Unlink</button>`);
+    if (owner || self) actions.push(m.active
+      ? `<button class="icon-btn" data-id="${escapeHtml(m.id)}" data-action="deactivate" title="Remove from active list">✕</button>`
+      : `<button class="icon-btn restore" data-id="${escapeHtml(m.id)}" data-action="activate" title="Restore">↺</button>`);
+    return `<div class="${m.active?'':'inactive'}">
       <div class="person-row">
-        <span class="avatar" style="background:${colorFor(m.id)}">${initials(m.name)}</span>
-        <input type="text" value="${escapeHtml(m.name)}" data-id="${m.id}" class="rename-input" ${m.active?'':'disabled'} />
-        ${m.active
-          ? `<button class="icon-btn" data-id="${m.id}" data-action="deactivate" title="Remove from active list">✕</button>`
-          : `<button class="icon-btn restore" data-id="${m.id}" data-action="activate" title="Restore">↺</button>`}
+        <span class="avatar" style="background:${colorFor(m.id)}">${escapeHtml(initials(m.name))}</span>
+        <div style="flex:1; min-width:0;">
+          <input type="text" value="${escapeHtml(m.name)}" data-id="${escapeHtml(m.id)}" class="rename-input" maxlength="40" ${m.active && canRename ? '' : 'disabled'} />
+          <div style="font-size:11px; color:var(--ink-muted); margin-top:2px; overflow-wrap:anywhere;">${escapeHtml(status)}</div>
+        </div>
+        ${actions.join("")}
       </div>
-    </div>
-  `).join("");
+    </div>`;
+  }).join("");
 
   card.querySelectorAll(".rename-input").forEach(inp=>{
     inp.addEventListener("change", async ()=>{
-      const val = inp.value.trim();
+      const val = inp.value.trim().slice(0, 40);
       if (!val) { inp.value = nameOf(inp.dataset.id); return; }
-      try{ await updateDoc(memberDoc(inp.dataset.id), {name: val}); saveToast("Renamed"); }
+      try{ saveToast("Renamed", await settleWrite(updateDoc(memberDoc(inp.dataset.id), {name: val}))); }
       catch(e){ errorToast(e, "Couldn't save — check your connection"); inp.value = nameOf(inp.dataset.id); }
     });
   });
   card.querySelectorAll('[data-action="deactivate"]').forEach(btn=>{
     btn.addEventListener("click", async ()=>{
       if (!confirm(nameOf(btn.dataset.id)+" won't appear for new expenses, but stays in past ones. Continue?")) return;
-      try{ await updateDoc(memberDoc(btn.dataset.id), {active:false}); saveToast("Removed"); }
+      try{ saveToast("Removed", await settleWrite(updateDoc(memberDoc(btn.dataset.id), {active:false}))); }
       catch(e){ errorToast(e, "Couldn't save — check your connection"); }
     });
   });
   card.querySelectorAll('[data-action="activate"]').forEach(btn=>{
     btn.addEventListener("click", async ()=>{
-      try{ await updateDoc(memberDoc(btn.dataset.id), {active:true}); saveToast("Restored"); }
+      try{ saveToast("Restored", await settleWrite(updateDoc(memberDoc(btn.dataset.id), {active:true}))); }
       catch(e){ errorToast(e, "Couldn't save — check your connection"); }
     });
   });
+  card.querySelectorAll('[data-action="invite"]').forEach(btn=>{
+    btn.addEventListener("click", ()=> inviteMember(btn.dataset.id));
+  });
+  card.querySelectorAll('[data-action="unlink"]').forEach(btn=>{
+    btn.addEventListener("click", ()=> unlinkMember(btn.dataset.id));
+  });
+}
+
+// One Gmail per name. Re-inviting replaces the old address, so a wrong or
+// old address can't still claim the name.
+async function inviteMember(memberId){
+  const raw = prompt(`${nameOf(memberId)}'s Google (Gmail) address. Only that account will be able to link to this name:`, "");
+  if (raw == null) return;
+  const email = raw.trim().toLowerCase();
+  if (!/^[^@\s\/]+@[^@\s\/]+\.[^@\s\/]+$/.test(email)){ toast("That doesn't look like an email address"); return; }
+  try{
+    const batch = writeBatch(db);
+    Object.entries(invites).forEach(([old, mid])=>{ if (mid === memberId && old !== email) batch.delete(inviteDoc(old)); });
+    batch.set(inviteDoc(email), {memberId, by: meId || null, createdAt: Date.now()});
+    saveToast(`Invited — ${nameOf(memberId)} can now sign in with ${email}`, await settleWrite(batch.commit()));
+  }catch(e){ errorToast(e, "Couldn't save the invite — check your connection"); }
+}
+
+// Unlinking clears the name's Google account and its invites. Their old link
+// stops counting at once (the rules check both sides).
+async function unlinkMember(memberId){
+  const m = members.find(x=>x.id === memberId);
+  if (!m || !m.authUid) return;
+  if (!confirm(`Unlink ${m.name}'s Google account? They won't be able to act as ${m.name} until you invite them again.`)) return;
+  try{
+    const batch = writeBatch(db);
+    batch.update(memberDoc(memberId), {authUid: null});
+    batch.delete(memberLinkDoc(m.authUid));
+    Object.entries(invites).forEach(([email, mid])=>{ if (mid === memberId) batch.delete(inviteDoc(email)); });
+    saveToast("Unlinked", await settleWrite(batch.commit()));
+  }catch(e){ errorToast(e, "Couldn't unlink — check your connection"); }
 }
 
 document.getElementById("p-tripname").addEventListener("change", async (e)=>{
-  try{ await setDoc(tripSettingsRef(), {name: e.target.value.trim() || DEFAULT_TRIP_NAME}, {merge:true}); }
+  try{ await setDoc(tripSettingsRef(), {name: (e.target.value.trim() || DEFAULT_TRIP_NAME).slice(0, 60)}, {merge:true}); }
   catch(err){ errorToast(err, "Couldn't save — check your connection"); }
 });
 document.getElementById("p-currency").addEventListener("change", async (e)=>{
@@ -1553,10 +1678,10 @@ async function addPerson(){
   const val = inp.value.trim();
   if (!val) return;
   try{
-    await addDoc(membersCol(), {name: val, active: true, createdAt: Date.now()});
+    const state = await settleWrite(setDoc(doc(membersCol()), {name: val.slice(0, 40), active: true, createdAt: Date.now()}));
     inp.value = "";
-    saveToast(val + " added");
-  }catch(e){ toast("Couldn't save — check your connection"); }
+    saveToast(val + " added — tap Invite next to them to let them sign in", state);
+  }catch(e){ errorToast(e, "Couldn't save — check your connection"); }
 }
 
 /* ---------- copy to clipboard (with a manual-select fallback) ---------- */
@@ -1612,7 +1737,7 @@ function buildTextSummary(){
   if (!active.length) lines.push("(none)");
   else active.forEach(e=>{
     const who = (e.participantIds||[]).map(nameOf).join(", ");
-    if (e.type === "settlement") lines.push(`[Settled] ${fmtDate(e.createdAt)} — ${nameOf(e.payerId)} paid ${who} — ${fmtMoney(e.amount)}`);
+    if (e.type === "settlement") lines.push(`[${e.confirmedBy ? "Settled" : e.disputed ? "Disputed" : "Pending"}] ${fmtDate(e.createdAt)} — ${nameOf(e.payerId)} paid ${who} — ${fmtMoney(e.amount)}`);
     else lines.push(`${fmtDate(e.createdAt)} — ${e.description} — ${fmtMoney(e.amount)} — paid by ${nameOf(e.payerId)} — split: ${who}`);
   });
   return lines.join("\n");
@@ -1620,7 +1745,12 @@ function buildTextSummary(){
 
 function buildCsv(){
   const rows = [["Date","Type","Description","Category","Amount","PaidBy","SplitWith","AddedBy","Deleted","DeletedBy","DeletedAt"]];
-  const csvField = v => `"${String(v==null?"":v).replace(/"/g,'""')}"`;
+  // quote everything, and defuse cells a spreadsheet would run as a formula
+  const csvField = v => {
+    let t = String(v==null?"":v);
+    if (typeof v === "string" && /^[=+\-@\t\r]/.test(t)) t = "'" + t;
+    return `"${t.replace(/"/g,'""')}"`;
+  };
   [...expenses].sort((a,b)=>(a.createdAt||0)-(b.createdAt||0)).forEach(e=>{
     rows.push([
       e.createdAt ? new Date(e.createdAt).toISOString() : "",
@@ -1685,15 +1815,18 @@ document.getElementById("nt-create").addEventListener("click", async ()=>{
   const btn = document.getElementById("nt-create");
   btn.disabled = true; btn.textContent = "Creating…";
   try{
-    const tripRef = await addDoc(collection(db,"trips"), {name, currency, createdAt: Date.now(), ownerUid: uid});
-    if (names.length){
-      const batch = writeBatch(db);
-      names.forEach(n=>{
-        const ref = doc(collection(db,`trips/${tripRef.id}/members`));
-        batch.set(ref, {name:n, active:true, createdAt: Date.now()});
-      });
-      await batch.commit().catch(()=>{});
-    }
+    const tripRef = doc(collection(db,"trips"));
+    await setDoc(tripRef, {name: name.slice(0, 60), currency, createdAt: Date.now(), ownerUid: uid});
+    const batch = writeBatch(db);
+    const meRef = doc(collection(db,`trips/${tripRef.id}/members`));
+    const myName = (auth.currentUser?.displayName || "Me").split(/\s+/)[0].slice(0, 40);
+    batch.set(meRef, {name: myName, active:true, createdAt: Date.now(), authUid: uid});
+    batch.set(doc(db, `trips/${tripRef.id}/memberLinks/${uid}`), {memberId: meRef.id, claimedAt: Date.now()});
+    names.forEach(n=>{
+      const ref = doc(collection(db,`trips/${tripRef.id}/members`));
+      batch.set(ref, {name: n.slice(0, 40), active:true, createdAt: Date.now()});
+    });
+    await batch.commit();
     location.href = location.pathname + "?trip=" + tripRef.id;
   }catch(e){
     toast("Couldn't create trip — check your connection");
@@ -1731,7 +1864,7 @@ function renderRecurring(){
         <b>${escapeHtml(r.description)}</b> · <span class="mono">${fmtMoney(r.amount)}</span> ${r.interval === "weekly" ? "every week" : "every month"}
         <div class="recur-meta">Paid by ${escapeHtml(nameOf(r.payerId))} · ${r.active ? (next ? "next " + fmtDate(next) : "active") : "paused"}</div>
       </div>
-      ${canEdit ? `<button class="btn-secondary recur-toggle" data-id="${r.id}" data-active="${r.active ? "1" : "0"}">${r.active ? "Pause" : "Resume"}</button>` : ""}
+      ${canEdit ? `<button class="btn-secondary recur-toggle" data-id="${escapeHtml(r.id)}" data-active="${r.active ? "1" : "0"}">${r.active ? "Pause" : "Resume"}</button>` : ""}
     </div>`;
   }).join("");
   card.querySelectorAll(".recur-toggle").forEach(btn=>{
@@ -1814,7 +1947,9 @@ async function enablePush(){
   try{
     const token = await getPushToken();
     if (!token){ pushState = "unavailable"; return false; }
-    await setDoc(doc(db, "pushTokens", uid), { tokens: window.arrayUnion(token), updatedAt: Date.now() }, { merge: true });
+    const ref = doc(db, "pushTokens", uid);
+    const have = await getDoc(ref).then(snap => (snap.exists() && snap.data().tokens) || []).catch(()=>[]);
+    await setDoc(ref, { tokens: [...have.filter(t=>t !== token).slice(-9), token], updatedAt: Date.now() });
     try{ localStorage.setItem(PUSH_KEY, "1"); }catch(e){}
     pushState = "on";
     return true;
@@ -1844,10 +1979,23 @@ async function refreshPushToken(){
   await enablePush();
   renderAlertsButton();
 }
+// Android Chrome refuses `new Notification()` from a page; a service worker
+// registration works everywhere that supports notifications at all.
+async function showLocalNotification(title, opts){
+  try{
+    const reg = ("serviceWorker" in navigator) ? await navigator.serviceWorker.getRegistration("./") : null;
+    if (reg){ await reg.showNotification(title, opts); return; }
+  }catch(e){ /* fall through */ }
+  try{ new Notification(title, opts); }catch(e){ /* nothing else to try */ }
+}
+function registerAlertWorker(){
+  if (!("serviceWorker" in navigator)) return Promise.resolve(null);
+  return navigator.serviceWorker.register("./firebase-messaging-sw.js", { scope: "./" }).catch(()=>null);
+}
 function emitPushEvent(kind, expenseId){
   if (!db || !uid || !expenseId) return;
   const tripKey = TRIP_ID || "default";
-  setDoc(doc(db, "pushEvents", `${tripKey}_${expenseId}_${kind}`),
+  setDoc(doc(db, "pushEvents", `${tripKey}_${expenseId}_${kind}_${uid}`),
     { tripKey, expenseId, kind, fromUid: uid, processed: false, createdAt: Date.now() }).catch(()=>{ /* best effort */ });
 }
 
@@ -1855,12 +2003,15 @@ function renderAlertsButton(){
   const btn = document.getElementById("p-alerts");
   const status = document.getElementById("alertsStatus");
   if (typeof Notification === "undefined"){
-    btn.textContent = "Not supported in this browser"; btn.disabled = true; status.textContent = ""; return;
+    const iPhone = /iPhone|iPad|iPod/.test(navigator.userAgent) && !navigator.standalone;
+    btn.textContent = "Not available here"; btn.disabled = true;
+    status.textContent = iPhone ? "On iPhone: tap Share, then Add to Home Screen, and open Trip Split from that icon to turn alerts on." : "This browser doesn't support notifications.";
+    return;
   }
   btn.textContent = alertsOn() ? "Turn alerts off" : "Turn alerts on";
   const on = alertsOn();
   const msg = {
-    on: "Also on when the app is closed: you'll get alerts within a few minutes.",
+    on: "Also on when the app is closed. Those can take a few minutes to arrive.",
     notconfigured: "Alerts arrive while the app is open. Closed-app alerts aren't switched on for this app yet.",
     unavailable: "Alerts arrive while the app is open. This browser can't do closed-app alerts (on iPhone, add the app to your Home Screen first).",
     blocked: "Alerts arrive while the app is open. Closed-app alerts are blocked in your browser settings.",
@@ -1879,6 +2030,7 @@ document.getElementById("p-alerts").addEventListener("click", async ()=>{
   if (perm === "granted"){
     try{ localStorage.setItem(ALERTS_KEY, "1"); }catch(e){}
     toast("Alerts on for this device");
+    await registerAlertWorker();
     await enablePush();
   } else toast("Notifications are blocked in your browser settings");
   renderAlertsButton();
@@ -1896,7 +2048,7 @@ function notifyActivity(e, id){
     : `${nameOf(e.addedBy)} added ${e.description} (${fmtMoney(e.amount)})`;
   // same tag as the closed-app alert, so the two replace each other, not double up
   const tag = `${TRIP_ID || "default"}_${id}_${isSettle ? "settlement_marked" : "expense_added"}`;
-  try{ new Notification(tripSettings.name || "Trip Split", {body, tag}); }catch(err){}
+  showLocalNotification(tripSettings.name || "Trip Split", {body, tag, icon: "icons/icon-192.png", data: {link: TRIP_ID ? "?trip=" + TRIP_ID : ""}});
 }
 // the person who paid hears when the other side confirms or disputes
 function notifyOutcome(before, after){
@@ -1909,7 +2061,7 @@ function notifyOutcome(before, after){
     ? `${who} confirmed your ${fmtMoney(after.amount)} payment`
     : `${who} disputed your ${fmtMoney(after.amount)} payment`;
   const tag = `${TRIP_ID || "default"}_${after.id}_${confirmed ? "settlement_confirmed" : "settlement_disputed"}`;
-  try{ new Notification(tripSettings.name || "Trip Split", {body, tag}); }catch(err){}
+  showLocalNotification(tripSettings.name || "Trip Split", {body, tag, icon: "icons/icon-192.png", data: {link: TRIP_ID ? "?trip=" + TRIP_ID : ""}});
 }
 
 /* ---------- my trips (switcher) ---------- */
@@ -1925,8 +2077,8 @@ async function registerTripForUser(){
   }catch(e){ registeredKey = null; /* rules for users/ may not be published yet */ }
 }
 const tripsBackdrop = document.getElementById("tripsBackdrop");
-// Your balance in each trip. Read on demand (3 small reads per trip), never in
-// the background, and kept for a minute so reopening the list is instant.
+// Your balance in each trip. Read on demand (that trip's people and expenses),
+// never in the background, and kept for a minute so reopening the list is instant.
 const standingCache = {};
 async function loadTripStanding(t){
   const hit = standingCache[t.key];
@@ -2002,15 +2154,15 @@ function renderPaymentForm(){
 document.getElementById("pay-save").addEventListener("click", async ()=>{
   if (!meId){ toast("Link your name first"); return; }
   try{
-    await setDoc(paymentDoc(meId), {
+    const state = await settleWrite(setDoc(paymentDoc(meId), {
       jazzcash: document.getElementById("pay-jazz").value.trim(),
       easypaisa: document.getElementById("pay-easy").value.trim(),
       bank: document.getElementById("pay-bank").value.trim(),
       note: document.getElementById("pay-note").value.trim(),
       by: meId, updatedAt: Date.now()
-    });
+    }));
     payDirty = false;
-    saveToast("Payment details saved");
+    saveToast("Payment details saved", state);
   }catch(e){ errorToast(e, "Couldn't save — check your connection"); }
 });
 
@@ -2074,6 +2226,7 @@ async function boot(){
   }
 
   initConnectionIndicator();
+  if (BAD_TRIP_LINK){ showTripNotFound(); return; }
 
   const signinScreen = document.getElementById("signinScreen");
   const signinError = document.getElementById("signinError");
@@ -2103,9 +2256,21 @@ async function boot(){
   // is picked up instantly — including with no signal at all — instead of
   // forcing a fresh network sign-in on every load.
   let subscribed = false;
-  let ownerClaimTried = false;
+  let whoAutoOpened = false;
+  let notInvitedShown = false;
+  let invitesListening = false;
+  function denied(err){
+    if (err && err.code === "permission-denied"){
+      if (!notInvitedShown){ notInvitedShown = true; showNotInvited(); }
+      return true;
+    }
+    return false;
+  }
   onAuthStateChanged(auth, async (user)=>{
     if (!user){
+      // signed out after a session was running: start clean rather than keep
+      // dead listeners and the previous person's identity on screen
+      if (subscribed){ location.reload(); return; }
       signinScreen.style.display = "flex";
       return;
     }
@@ -2145,7 +2310,7 @@ async function boot(){
 
     _onSnapshot(membersCol(), async (snap)=>{
       members = snap.docs.map(d=>({id:d.id, ...d.data()}));
-      if (members.length === 0 && !TRIP_ID){
+      if (members.length === 0 && !TRIP_ID && isTripOwner()){
         // seed the default/legacy trip only — a freshly-created trip starts empty on purpose
         await seedMembersOnce();
         return; // the seed's own writes re-trigger this snapshot
@@ -2154,9 +2319,10 @@ async function boot(){
       // never cached client-side — so it can't drift or be spoofed locally
       meId = members.find(m=>m.active && m.authUid===uid)?.id || null;
       renderAll();
-      if (!meId && members.length) openWhoModal();
+      // offer the link screen once per visit, not on every change
+      if (!meId && members.length && !whoAutoOpened){ whoAutoOpened = true; openWhoModal(); }
     }, (err)=>{
-      toast("Sync error: " + err.code);
+      if (!denied(err)) toast("Sync error: " + err.code);
     });
 
     refreshPushToken();
@@ -2174,7 +2340,7 @@ async function boot(){
       firstExpensesSnap = false;
       renderAll();
     }, (err)=>{
-      toast("Sync error: " + err.code);
+      if (!denied(err)) toast("Sync error: " + err.code);
     });
 
     // repeating templates and the "my trips" list: quiet on error, since the
@@ -2197,12 +2363,17 @@ async function boot(){
         const data = snap.data();
         tripSettings = { name: data.name || DEFAULT_TRIP_NAME, currency: data.currency || DEFAULT_CURRENCY, ownerUid: data.ownerUid || null, closed: !!data.closed };
         tripNotFound = false;
-        if (!data.ownerUid && !ownerClaimTried){
-          // legacy/default trip predates ownership — first person to load it after
-          // this rollout claims it, one time only (rules only allow this when unset)
-          ownerClaimTried = true;
-          await _setDoc(tripSettingsRef(), {ownerUid: uid}, {merge:true}).catch(()=>{});
+        if (isTripOwner() && !invitesListening){
+          // only the owner can see who has been invited
+          invitesListening = true;
+          _onSnapshot(invitesCol(), (isnap)=>{
+            invites = {};
+            isnap.docs.forEach(d=>{ invites[d.id] = d.data().memberId; });
+            renderAll();
+          }, ()=>{ invites = {}; });
         }
+      } else if (snap.metadata.fromCache){
+        return; // nothing cached yet (first visit, slow or no signal): wait for the server
       } else if (TRIP_ID){
         // a ?trip= link pointing at nothing — don't silently invent a trip here
         tripNotFound = true;

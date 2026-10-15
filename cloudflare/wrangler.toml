@@ -1,0 +1,12 @@
+# Only needed if you deploy with the Wrangler CLI (`npx wrangler deploy` from
+# this folder). Pasting dispatch-worker.js into the Cloudflare dashboard works
+# just as well; then set the same cron there.
+name = "trip-split-alert-timer"
+main = "dispatch-worker.js"
+compatibility_date = "2026-10-01"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+# The GitHub token is a secret, never in this file:
+#   npx wrangler secret put GH_TOKEN

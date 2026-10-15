@@ -1,16 +1,21 @@
 name: background-alerts
 
-# Free replacement for Cloud Functions: every few minutes this looks for new
-# "something happened" markers in Firestore and sends the matching alerts
-# through Firebase Cloud Messaging (free). GitHub may delay a scheduled run by
-# a few minutes, so alerts are near-real-time, not instant.
+# Free replacement for Cloud Functions: looks for new "something happened"
+# markers in Firestore and sends the matching alerts through Firebase Cloud
+# Messaging (free).
+#
+# Triggers:
+#   - workflow_dispatch: called every 5 minutes by the free Cloudflare Worker in
+#     cloudflare/ (GitHub's own scheduler runs hourly jobs hours late, so it is
+#     only the backup here).
+#   - schedule: hourly backup, off the top of the hour where GitHub is busiest.
 #
 # Needs one repository secret: FIREBASE_SERVICE_ACCOUNT (service-account JSON).
 # Without it the job exits cleanly and does nothing.
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "23 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -31,10 +36,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # actions pinned to release commits (v7.0.1, v7.1.0)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci --omit=dev
       - name: Send pending alerts
